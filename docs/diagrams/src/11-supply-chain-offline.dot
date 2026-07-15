@@ -1,0 +1,62 @@
+// ============================================================================
+// MalAnalyzer - 11, Supply chain & offline (air-gapped) trust
+// Source of truth: ADR-020; ARCHITECTURE section 3 (+ DESIGN-AUDIT A12, residual R11).
+// Purpose: a compromised update to a security tool is catastrophic. Show the
+// build->sign->bundle->sneakernet->verify->deploy chain, AND the offline
+// REVOCATION path (round-1 gap): a trust root + signed revocation list travel
+// by sneakernet with a monotonic epoch; sites fail-closed on stale/revoked.
+// ============================================================================
+digraph supply_chain {
+  rankdir=LR;
+  bgcolor="white";
+  compound=true;
+  nodesep=0.35; ranksep=0.6;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - Supply Chain &amp; Offline Trust (with revocation)</b><br/><font point-size="10">Threshold/witnessed signing so no single key forges; reproducible builds; and an offline revocation feed so a leaked key can't sign a bundle that verifies forever.</font>>;
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", penwidth=1.4, margin="0.13,0.07"];
+  edge [fontname="Helvetica", fontsize=9, color="#37474f", penwidth=1.2];
+
+  subgraph cluster_build {
+    label=<<b>BUILD (trusted, online)</b>>;
+    style="rounded,filled"; color="#1565c0"; fillcolor="#e3f2fd"; penwidth=1.8; fontcolor="#0d47a1";
+    node [fillcolor="#bbdefb", color="#1565c0"];
+    REPRO [label="Reproducible build\n(independent rebuild-and-diff)"];
+    SBOM  [label="SBOM (Syft / CycloneDX)\npinned + vetted deps"];
+    ATTEST[label="in-toto attestations\n+ threshold / witness co-signing\n(no single key can forge)"];
+    REPRO -> SBOM -> ATTEST;
+  }
+
+  BUNDLE [label="Signed offline bundle\nimages + model weights (provenance + scanned)\n+ YARA/family/goodware corpora + signature DBs", fillcolor="#cfd8dc", color="#546e7a", shape=folder, style=filled, penwidth=1.6];
+
+  SNEAKER [label="sneakernet\n(physical media)", shape=parallelogram, fillcolor="#fff8e1", color="#e65100", style=filled];
+
+  subgraph cluster_site {
+    label=<<b>AIR-GAPPED SITE</b>>;
+    style="rounded,filled"; color="#2e7d32"; fillcolor="#e8f5e9"; penwidth=1.8; fontcolor="#1b5e20";
+    node [fillcolor="#c8e6c9", color="#2e7d32"];
+    VERIFY [label="Verify signature + attestation\n+ check against revocation epoch", shape=octagon, penwidth=1.8, fillcolor="#fff3e0", color="#e65100", fontcolor="#e65100"];
+    REG    [label="air-gapped registry"];
+    DEPLOY [label="deploy / upgrade"];
+    VERIFY -> REG -> DEPLOY;
+  }
+
+  // revocation feed (the round-1 gap)
+  subgraph cluster_trust {
+    label=<<b>OFFLINE TRUST ROOT</b>>;
+    style="rounded,dashed"; color="#c62828"; fillcolor="#fff5f5"; penwidth=1.6; fontcolor="#b71c1c";
+    node [fillcolor="#ffcdd2", color="#c62828"];
+    ROOT [label="trust root + signed\nrevocation list\nMONOTONIC epoch"];
+  }
+
+  ATTEST -> BUNDLE [ltail=cluster_build];
+  BUNDLE -> SNEAKER;
+  SNEAKER -> VERIFY [lhead=cluster_site];
+  ROOT -> SNEAKER [style=dashed, color="#c62828", constraint=false];
+  ROOT -> VERIFY [label=" fail-closed on stale epoch\n or revoked key", style=dashed, color="#c62828", fontcolor="#b71c1c", lhead=cluster_site];
+
+  NOTE [shape=note, fillcolor="#fff8e1", color="#e65100", style=filled, fontsize=9,
+        label="Model weights are untrusted-until-verified: provenance-pinned,\nsigned, scanned; loading arbitrary weights is a privileged, audited\naction. Leaked-key window is bounded by the revocation epoch +\na max-staleness policy, not zero (residual R11)."];
+  DEPLOY -> NOTE [style=invis];
+}

@@ -1,0 +1,58 @@
+# Minimum stateful set for OpenMalLab phase 1.
+# Just what the static wedge needs: Postgres, Temporal (dev-server), SeaweedFS
+# for object storage, and OpenBao for secrets. No message-bus cluster, no vector
+# or graph store, until a feature actually needs one.
+#
+# The image tags below are public for now. In an air-gapped or corporate setup,
+# point them at your own registry (for example an Artifactory OCI repo) and pin
+# exact digests. The passwords here are local-dev-only placeholders; real secrets
+# come from OpenBao, never from this file.
+
+name: openmallab
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: openmallab
+      POSTGRES_PASSWORD: local-dev-only
+      POSTGRES_DB: openmallab
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  temporal:
+    image: temporalio/auto-setup:1.24
+    depends_on:
+      - postgres
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: openmallab
+      POSTGRES_PWD: local-dev-only
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "7233:7233"
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    command: "server -s3 -dir=/data"
+    volumes:
+      - seaweed:/data
+    ports:
+      - "8333:8333"
+      - "9333:9333"
+
+  openbao:
+    image: openbao/openbao:latest
+    cap_add:
+      - IPC_LOCK
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: local-dev-only
+    ports:
+      - "8200:8200"
+
+volumes:
+  pgdata:
+  seaweed:

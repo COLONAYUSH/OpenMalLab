@@ -1,0 +1,83 @@
+// ============================================================================
+// MalAnalyzer - 10, Phase-1 component & data-path view (CORRECTED)
+// Source of truth: PHASE1 section 1 (+ DESIGN-AUDIT A1/A3/A5/A6).
+// Corrections drawn here: data-plane workers hold NO store credentials
+// (artifact in via read-only mounted fd; results out via mounted UDS; the
+// orchestrator brokers all persistence); detonation runs on a SEPARATE host
+// with a detonation-local controller; the pump is two processes.
+// ============================================================================
+digraph phase1_components {
+  rankdir=LR;
+  bgcolor="white";
+  compound=true;
+  nodesep=0.3; ranksep=0.6;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - Phase-1 Components &amp; Data Paths (corrected)</b><br/><font point-size="10">Workers hold no store credentials (mounted fd in, UDS out; orchestrator brokers writes). Detonation is a separate host. The pump is two processes.</font>>;
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", penwidth=1.4, margin="0.12,0.07"];
+  edge [fontname="Helvetica", fontsize=9, color="#37474f", penwidth=1.2];
+
+  U [label="Analyst", fillcolor="#e1bee7", color="#6a1b9a"];
+
+  subgraph cluster_ctrl {
+    label=<<b>CONTROL PLANE</b> ,  single control node>;
+    style="rounded,filled"; color="#2e7d32"; fillcolor="#e8f5e9"; penwidth=2; fontcolor="#1b5e20";
+    node [fillcolor="#c8e6c9", color="#2e7d32"];
+    WEB  [label="mal-web (TS/React)\ntriage queue, evidence tree"];
+    GW   [label="mal-gateway (Go)\nOIDC, OPA, audit, intake"];
+    ORCH [label="mal-orchestrator (Go + Temporal)\ndurable DAG, caps, aggregation\n+ persistence BROKER (writes stores)"];
+    NATS [label="NATS JetStream\nper-class streams"];
+  }
+
+  subgraph cluster_data {
+    label=<<b>DATA PLANE</b> ,  single-use, empty netns, seccomp, NO store creds>;
+    style="rounded,filled"; color="#1565c0"; fillcolor="#e3f2fd"; penwidth=2; fontcolor="#0d47a1";
+    node [fillcolor="#bbdefb", color="#1565c0"];
+    SIDE [label="per-job sidecar\n(fetches artifact, mounts read-only fd)", fillcolor="#e3f2fd", color="#1565c0", style="rounded,filled,dashed"];
+    ID   [label="mal-ident (Rust)\nMagika"];
+    EX   [label="mal-extract (Rust)\npath-safe unarchive"];
+    ST   [label="mal-static-* (Python)\nDIE, FLOSS, capa, YARA-X, doc/script"];
+  }
+
+  subgraph cluster_store {
+    label=<<b>STORES</b>>;
+    style="rounded,filled"; color="#546e7a"; fillcolor="#eceff1"; penwidth=1.6; fontcolor="#37474f";
+    node [fillcolor="#cfd8dc", color="#546e7a", shape=cylinder, style=filled];
+    OBJ [label="SeaweedFS\nenvelope-enc WORM vault"];
+    PG  [label="PostgreSQL\njobs,findings,cases,RLS"];
+    VK  [label="Valkey\nleases"];
+    BAO [label="OpenBao\nkeys (KEK)"];
+  }
+
+  PUMP [label="mal-pump (Rust)\nmover + network-dead validator\n(diagram 04)", fillcolor="#ffe082", color="#f9a825", penwidth=1.8];
+
+  subgraph cluster_det {
+    label=<<b>DETONATION PLANE</b> ,  SEPARATE host, no route/creds to control (diagram 03)>;
+    style="rounded,filled"; color="#c62828"; fillcolor="#ffebee"; penwidth=2; fontcolor="#b71c1c";
+    node [fillcolor="#ffcdd2", color="#c62828"];
+    DCTRL[label="detonation-local controller\nleases, libvirt, reconciler (LOCAL)"];
+    DET  [label="mal-detonator (Go + libvirt)\nTier-2 KVM"];
+    VM   [label="disposable VM\nqcow2 CoW + snapshot", shape=box];
+    SIM  [label="mal-simnet\nINetSim/FakeNet (separate netns)"];
+    DOBJ [label="det-local store\n(per-run, wiped)", shape=cylinder, style=filled];
+  }
+
+  // control-plane wiring
+  U -> WEB -> GW; GW -> ORCH; GW -> OBJ [label=" stream, enc, WORM", color="#90a4ae", penwidth=0.9, fontcolor="#78909c"];
+  ORCH -> NATS -> SIDE [label=" dispatch"];
+  SIDE -> ID [arrowhead=none, style=dotted, label=" mounts fd"]; SIDE -> EX [arrowhead=none, style=dotted]; SIDE -> ST [arrowhead=none, style=dotted];
+  ID -> ORCH [label=" result via UDS", color="#1565c0"]; EX -> ORCH [color="#1565c0"]; ST -> ORCH [color="#1565c0"];
+  ORCH -> PG [label=" brokered writes", color="#90a4ae", penwidth=0.9, fontcolor="#78909c", constraint=false];
+  ORCH -> OBJ [color="#90a4ae", penwidth=0.9, constraint=false];
+  ORCH -> VK [color="#90a4ae", penwidth=0.9, constraint=false];
+  GW -> BAO [color="#90a4ae", penwidth=0.9, style=dotted, constraint=false];
+
+  // detonation via pump (store-and-forward, both ways)
+  ORCH -> PUMP [label=" enqueue job", color="#e65100", penwidth=1.5];
+  PUMP -> DCTRL [label=" job spool: det PULLS\n (det initiates; no route into det)", color="#e65100", penwidth=1.5, lhead=cluster_det];
+  DCTRL -> DET -> VM; DET -> SIM; VM -> DOBJ [label=" results"]; DCTRL -> DOBJ [style=dotted, label=" state"];
+  DOBJ -> PUMP [label=" control PULLS", color="#e65100", penwidth=1.7, ltail=cluster_det];
+  PUMP -> ORCH [label=" validated canonical", color="#e65100", penwidth=1.7];
+  PUMP -> OBJ [label=" artifacts after validation", color="#e65100", penwidth=1.1, constraint=false];
+}

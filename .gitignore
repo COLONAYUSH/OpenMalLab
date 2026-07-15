@@ -1,0 +1,53 @@
+# Editor / local tooling
+*.local.json
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+/bin/
+*.exe
+*.test
+*.out
+vendor/
+
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock.orig
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node / TS
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.npm/
+
+# Secrets / local env (never commit)
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# Samples: NEVER commit malware or live samples
+samples/
+corpus/live/
+*.sample
+
+# Build/artifacts
+*.log
+tmp/

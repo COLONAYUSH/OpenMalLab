@@ -1,0 +1,116 @@
+// ============================================================================
+// MalAnalyzer - 01, System planes & trust architecture (master map)
+// Source of truth: docs/ARCHITECTURE.md section 1, ADR-001/006/007/016
+// Purpose: show every plane, every LEGITIMATE crossing, and - explicitly - the
+// detonation->control path that DOES NOT EXIST. If a path isn't drawn, it isn't
+// reachable. (P2) marks Phase-2 components; everything else is Phase-1.
+// Shared palette: control=green, data=blue, detonation=red, mediation=amber,
+// stores=slate, analyst=purple. Forbidden path = red dashed, barred both ends.
+// ============================================================================
+digraph system_planes {
+  rankdir=TB;
+  bgcolor="white";
+  compound=true;
+  newrank=true;
+  nodesep=0.35; ranksep=0.7;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - System Planes &amp; Trust Architecture</b><br/><font point-size="10">Three strongly-isolated planes. Every edge is an allowed crossing; the barred red edge is a path that structurally does not exist.</font>>;
+
+  node  [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", penwidth=1.4, margin="0.14,0.09"];
+  edge  [fontname="Helvetica", fontsize=9.5, color="#37474f", penwidth=1.2];
+
+  // ---- Analyst / browser -------------------------------------------------
+  AN [label="Analyst (browser SPA)\nmediated noVNC, per-user Jupyter", fillcolor="#e1bee7", color="#6a1b9a"];
+
+  // ---- Control plane (trusted) ------------------------------------------
+  subgraph cluster_control {
+    label=<<b>CONTROL PLANE</b>  (trusted - never executes malware)>;
+    style="rounded,filled"; color="#2e7d32"; fillcolor="#e8f5e9"; penwidth=2; fontcolor="#1b5e20";
+    node [fillcolor="#c8e6c9", color="#2e7d32"];
+    GW    [label="API Gateway (Go)\nOIDC, OPA default-deny, mTLS, audit"];
+    ORCH  [label="Orchestrator\nTemporal durable DAG, cap enforcement\n, fail-closed aggregation"];
+    NATS  [label="Dispatch bus\nNATS JetStream (per-class streams)", shape=box];
+    AIGW  [label="AI Gateway  (P2)\nquarantine / dual-LLM, per-case tokens", style="rounded,filled,dashed"];
+    HUNT  [label="Hunting / TI  (P2)\nYARA-X retro/live, graph pivots", style="rounded,filled,dashed"];
+  }
+
+  // ---- Data plane (parses hostile bytes, no execution) ------------------
+  subgraph cluster_data {
+    label=<<b>DATA PLANE</b>  (parses hostile bytes, no execution)>;
+    style="rounded,filled"; color="#1565c0"; fillcolor="#e3f2fd"; penwidth=2; fontcolor="#0d47a1";
+    node [fillcolor="#bbdefb", color="#1565c0"];
+    WORK [label="Single-use engine workers\nident (Magika), extract, DIE/PE, FLOSS\ncapa/ATT&CK, YARA-X, doc/script, (Ghidra/Vol P1.5)\n- empty netns, seccomp, single-use, tenant-partitioned"];
+  }
+
+  // ---- Mediation (trusted by neither side) ------------------------------
+  subgraph cluster_med {
+    label=<<b>MEDIATION</b>  (third network, trusted by neither side)>;
+    style="rounded,filled"; color="#f9a825"; fillcolor="#fff8e1"; penwidth=2; fontcolor="#e65100";
+    node [fillcolor="#ffe082", color="#f9a825"];
+    PUMP [label="Write-only data pump / guard\nPULLS from detonation, strict JSON-Schema\nvalidate in sandboxed parser, continuously fuzzed"];
+  }
+
+  // ---- Detonation plane (assume-breach, dead-ended) ---------------------
+  subgraph cluster_det {
+    label=<<b>DETONATION PLANE</b>  (executes malware, assume-breach, DEAD-ENDED)>;
+    style="rounded,filled"; color="#c62828"; fillcolor="#ffebee"; penwidth=2; fontcolor="#b71c1c";
+    node [fillcolor="#ffcdd2", color="#c62828"];
+    DBUS [label="Detonation-local bus\n(its OWN bus - not control's)"];
+    T1   [label="Tier-1 emulation\nSpeakeasy / Qiling"];
+    T2   [label="Tier-2 KVM\nin-guest, disposable VM"];
+    T3   [label="Tier-3 Xen/DRAKVUF VMI  (P2)\ndedicated non-nested HW", style="rounded,filled,dashed"];
+    BM   [label="Bare-metal  (P2)\nattested / reflashed", style="rounded,filled,dashed"];
+    SIM  [label="Sim-net\nINetSim / FakeNet, egress default none/sim"];
+    DOBJ [label="Detonation object store\n(its OWN store, wiped per run)"];
+  }
+
+  // ---- Stores (control/data plane) --------------------------------------
+  subgraph cluster_store {
+    label=<<b>STORES</b>  (control / data plane)>;
+    style="rounded,filled"; color="#546e7a"; fillcolor="#eceff1"; penwidth=1.8; fontcolor="#37474f";
+    node [fillcolor="#cfd8dc", color="#546e7a", shape=cylinder, style=filled];
+    VAULT [label="Sample vault\nS3 (SeaweedFS), envelope-enc, WORM"];
+    PG    [label="PostgreSQL\nrelational, jobstate, RLS"];
+    VEC   [label="Qdrant + graph engine (P2)"];
+    OSCH  [label="OpenSearch (P1.5)"];
+    VK    [label="Valkey\nleases, cache"];
+  }
+
+  // ---- Legitimate crossings ---------------------------------------------
+  AN   -> GW   [label=" (1) authn/z\n    mediated"];
+  GW   -> ORCH [label=" start workflow"];
+  GW   -> VAULT[label=" stream, SHA-256\n envelope-enc, WORM"];
+  ORCH -> NATS [label=" (2) dispatch"];
+  NATS -> WORK [label=" static jobs"];
+  // Store-access edges are de-emphasized (thin slate) so the eye stays on the
+  // plane crossings and the pump path - store wiring detail lives in diagram 10.
+  edge [color="#b0bec5", penwidth=0.9, fontcolor="#78909c", fontsize=9];
+  WORK -> VAULT[label=" read-only artifact\n (mounted fd, brokered)", constraint=false];
+  ORCH -> PG   [label=" jobstate + findings\n (workers hold no creds)", constraint=false];
+  ORCH -> VK   [label=" leases", constraint=false];
+  HUNT -> VEC  [style=dashed, constraint=false];
+  WORK -> OSCH [style=dashed, constraint=false, label=" (P1.5)"];
+  edge [color="#9e9e9e", penwidth=1.1, style=dashed, fontcolor="#9e9e9e", fontsize=9.5];
+  ORCH -> AIGW [label=" (P2)"];
+  ORCH -> HUNT [label=" (P2)"];
+  edge [color="#37474f", penwidth=1.2, style=solid, fontcolor="#37474f"];
+
+  // detonation dispatch goes THROUGH the pump; control never talks to det directly
+  ORCH -> PUMP [label=" (3) dispatch\n detonation job", color="#e65100", penwidth=1.6];
+  PUMP -> DBUS [label=" (4) into det-local bus", color="#e65100", penwidth=1.6];
+  DBUS -> T1; DBUS -> T2; DBUS -> T3 [style=dashed]; DBUS -> BM [style=dashed];
+  T1 -> SIM; T2 -> SIM; T3 -> SIM [style=dashed]; BM -> SIM [style=dashed];
+  T1 -> DOBJ; T2 -> DOBJ; T3 -> DOBJ [style=dashed]; BM -> DOBJ [style=dashed];
+
+  // results leave ONLY by control PULLING through the pump, then validated -> orchestrator
+  DOBJ -> PUMP [label=" store-and-forward\n CONTROL PULLS (no inbound)", color="#e65100", penwidth=1.8];
+  PUMP -> ORCH [label=" validated canonical\n schema only", color="#e65100", penwidth=1.8];
+  PUMP -> VAULT[label=" copy artifact bytes\n AFTER validation -> WORM", color="#e65100", constraint=false];
+
+  // ---- The path that DOES NOT EXIST (drawn to prove its absence) ---------
+  DBUS -> ORCH [dir=both, arrowhead=tee, arrowtail=tee, color="#c62828",
+                style=dashed, penwidth=2.4, constraint=false, fontcolor="#b71c1c",
+                label=<<b>NO ROUTE, NO CREDENTIALS</b><br/>no bus/store shared, no inbound connection<br/>a guest escape reaches nothing trusted>];
+}

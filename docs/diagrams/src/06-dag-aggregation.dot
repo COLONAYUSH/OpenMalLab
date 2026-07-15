@@ -1,0 +1,57 @@
+// ============================================================================
+// MalAnalyzer - 06, Recursive DAG & fail-closed verdict aggregation
+// Source of truth: ADR-003; PHASE1 section 3.1 (+ DESIGN-AUDIT A2/A14).
+// Purpose: show the worked diamond and prove the invariant - no input turns a
+// malicious sample benign. Monotone max over UNIQUE nodes; padding can't
+// dilute; cap-blow floors to SUSPICIOUS (blocking); a benign detonation
+// self-report never lowers a verdict.
+// ============================================================================
+digraph dag_aggregation {
+  rankdir=TB;
+  bgcolor="white";
+  nodesep=0.4; ranksep=0.6;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - Verdict Aggregation over the dedup'd DAG</b><br/><font point-size="10">Monotone max over UNIQUE nodes + a separate diversity signal. There is no input that turns a malicious sample benign.</font>>;
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", penwidth=1.4, margin="0.14,0.08"];
+  edge [fontname="Helvetica", fontsize=9, color="#37474f", penwidth=1.2];
+
+  // verdict colour key: MALICIOUS=red, SUSPICIOUS=amber, BENIGN=green, UNKNOWN=grey
+  subgraph cluster_diamond {
+    label=<<b>Worked diamond</b>: a ZIP with <i>dropper.exe</i> twice + one benign PDF + 10,000 benign padding PDFs>;
+    style="rounded"; color="#90a4ae"; penwidth=1.4;
+
+    ZIP  [label="ZIP (root)\nown=UNKNOWN\nrollup => MALICIOUS", fillcolor="#ffcdd2", color="#c62828", penwidth=2];
+    eA   [label="entry A", shape=point, width=0.06, color="#90a4ae"];
+    eB   [label="entry B", shape=point, width=0.06, color="#90a4ae"];
+    DROP [label="dropper.exe\n(same hash -> ONE node,\ntwo incoming edges)\nMALICIOUS", fillcolor="#ef9a9a", color="#b71c1c", penwidth=2];
+    PDF  [label="readme.pdf\nBENIGN", fillcolor="#c8e6c9", color="#2e7d32"];
+    PAD  [label="x 10,000 benign\npadding PDFs\nBENIGN", fillcolor="#c8e6c9", color="#2e7d32"];
+
+    ZIP -> eA [arrowhead=none]; ZIP -> eB [arrowhead=none];
+    eA -> DROP; eB -> DROP [label=" dedup"];
+    ZIP -> PDF; ZIP -> PAD;
+  }
+
+  // rollup result
+  RES [shape=note, fillcolor="#ffebee", color="#c62828", style=filled, fontsize=9.5,
+       label="rollup: dropper counted ONCE (no 2x inflation);\n10,000 benign PDFs cannot dilute the max.\nnode_verdict(ZIP) = MALICIOUS,  diversity_signal = 1"];
+  DROP -> RES [style=dotted, color="#c62828", arrowhead=none];
+
+  // the rules
+  RULES [shape=none, margin=0, label=<
+    <table border="1" cellborder="0" cellspacing="0" cellpadding="6" color="#37474f">
+      <tr><td bgcolor="#37474f" align="center"><font color="white"><b>Aggregation rules (deterministic)</b></font></td></tr>
+      <tr><td align="left"><b>node_verdict</b> = max( own_local , max over each <b>UNIQUE</b> child )</td></tr>
+      <tr><td align="left"><b>diversity_signal</b> = count of DISTINCT malicious child hashes<br align="left"/>(50 distinct droppers: diversity 50, surfaced to analyst)</td></tr>
+      <tr><td align="left"><b>flags</b> += potential_evasion if <b>any</b> branch truncated</td></tr>
+      <tr><td align="left"><font color="#2e7d32">BENIGN never lowers / masks MALICIOUS (monotone)</font></td></tr>
+      <tr><td align="left"><font color="#c62828">cap-blow on a branch: that branch = SUSPICIOUS</font><br align="left"/><font color="#c62828">+ analysis_incomplete = <b>blocking-severity</b> (not "allow pending review")</font></td></tr>
+      <tr><td align="left"><font color="#c62828">detonation escape / anti-analysis indicator: MALICIOUS;</font><br align="left"/><font color="#c62828">a benign in-guest self-report never lowers a verdict</font></td></tr>
+    </table>>];
+
+  // ordering
+  RES -> RULES [style=invis];
+  { rank=same; RES; }
+}

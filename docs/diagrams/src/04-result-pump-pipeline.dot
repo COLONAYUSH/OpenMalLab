@@ -1,0 +1,76 @@
+// ============================================================================
+// MalAnalyzer - 04, Write-only result pump pipeline (two-process split)
+// Source of truth: ADR-007 (+ DESIGN-AUDIT A4/A11); PHASE1 section 2.2, section 5.3,
+// invariant #4. Purpose: show the pump is TWO least-privilege processes - an
+// untrusted transport mover and a network-dead validator - so "network-dead
+// yet emits to the orchestrator" is literally true, and to bound the blast
+// radius if the validator falls (R8). Validation precedes any byte reaching
+// the core; the canonical result is parse-safe, NOT honest.
+// ============================================================================
+digraph pump_pipeline {
+  rankdir=LR;
+  bgcolor="white";
+  compound=true;
+  nodesep=0.35; ranksep=0.6;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - Write-Only Result Pump (two-process split)</b><br/><font point-size="10">Untrusted mover + network-dead validator. Validation precedes the control plane seeing any byte. Fail-closed: malformed &#8594; dropped + flagged.</font>>;
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", penwidth=1.4, margin="0.13,0.08"];
+  edge [fontname="Helvetica", fontsize=9, color="#37474f", penwidth=1.3];
+
+  // ---- detonation ------------------------------------------------------
+  subgraph cluster_det {
+    label=<<b>DETONATION</b> (untrusted)>;
+    style="rounded,filled"; color="#c62828"; fillcolor="#ffebee"; penwidth=2; fontcolor="#b71c1c";
+    node [fillcolor="#ffcdd2", color="#c62828"];
+    DS [label="Detonation-local store\n(per-run results + artifacts)", shape=cylinder, style=filled];
+  }
+
+  // ---- pump: two processes ---------------------------------------------
+  subgraph cluster_mover {
+    label=<<b>PUMP, mover</b> (untrusted transport)>;
+    style="rounded,filled"; color="#ef6c00"; fillcolor="#fff3e0"; penwidth=2; fontcolor="#e65100";
+    node [fillcolor="#ffe0b2", color="#ef6c00"];
+    MOVER [label="PULL bytes on schedule\ninto a quarantine spool\n\nCREDS: read detonation store only\nCANNOT reach orchestrator or vault"];
+    QSPOOL[label="Quarantine spool", shape=cylinder, style=filled];
+    MOVER -> QSPOOL [arrowhead=none];
+  }
+  subgraph cluster_val {
+    label=<<b>PUMP, validator</b> (network-dead, seccomp-strict, fuzzed)>;
+    style="rounded,filled"; color="#f9a825"; fillcolor="#fffde7"; penwidth=2.2; fontcolor="#e65100";
+    node [fillcolor="#ffe082", color="#f9a825"];
+    VAL [label="Validate vs strict JSON-Schema\n- size / array / string caps\n  (total size <= Temporal payload limit)\n- field allow-list, type/regex\n- artifact hash exists in bundle\n- NO pickle, NO Any, NO nesting"];
+    DEC [label="valid?", shape=diamond, fillcolor="#fff3e0", color="#e65100", style=filled, height=0.9, width=1.2];
+    VAL -> DEC;
+  }
+
+  // ---- control ---------------------------------------------------------
+  subgraph cluster_ctrl {
+    label=<<b>CONTROL PLANE</b> (trusted)>;
+    style="rounded,filled"; color="#2e7d32"; fillcolor="#e8f5e9"; penwidth=2; fontcolor="#1b5e20";
+    node [fillcolor="#c8e6c9", color="#2e7d32"];
+    ORCH [label="Orchestrator\ncanonical record -> Temporal history\n(bounded, SAFELY deserialized,\nno complex objects)"];
+    WORM [label="WORM vault\nartifact bytes copied\nAFTER validation", shape=cylinder, style=filled, fillcolor="#cfd8dc", color="#546e7a"];
+  }
+
+  REJECT [label="FAIL-CLOSED\nrun -> crashed / suspicious\npayload DROPPED (never parsed by core)\nincident logged", shape=octagon, fillcolor="#ffcdd2", color="#b71c1c", penwidth=2, fontcolor="#b71c1c"];
+
+  // ---- flows -----------------------------------------------------------
+  DS    -> MOVER [label=" PULL (no inbound\n from control)", color="#e65100", penwidth=1.8, ltail=cluster_det, lhead=cluster_mover];
+  QSPOOL-> VAL   [label=" local pipe/fd", color="#ef6c00", penwidth=1.6, lhead=cluster_val];
+  DEC   -> ORCH  [label=" YES: canonical\n schema only", color="#2e7d32", penwidth=1.8, lhead=cluster_ctrl];
+  DEC   -> WORM  [label=" YES: copy\n artifact bytes", color="#2e7d32", penwidth=1.4];
+  DEC   -> REJECT[label=" NO", color="#c62828", penwidth=1.8, style=dashed];
+
+  // ---- the thing that never happens ------------------------------------
+  DS -> ORCH [color="#c62828", style=dashed, penwidth=2.2, arrowhead=tee, constraint=false, fontcolor="#b71c1c",
+              label=<<b>NEVER</b>: raw detonation output<br/>is not deserialized by the core>];
+
+  // ---- callouts --------------------------------------------------------
+  HONEST [shape=note, fillcolor="#ffebee", color="#c62828", style=filled, fontsize=9,
+          label="PARSE-SAFE, NOT HONEST: the pump proves the\nresult is well-formed, not that it is true. A result\nfrom a compromised detonation host can be a\nschema-valid LIE - so a benign result never lowers\na verdict, and escape indicators floor the run\n(diagram 03 / 06)."];
+  BLAST [shape=note, fillcolor="#fff8e1", color="#f9a825", style=filled, fontsize=9,
+         label="IF THE VALIDATOR FALLS (residual R8): blast radius\nbounded by the 2-process split (mover holds no\ncontrol creds) + continuous fuzzing + strict caps.\nHardware data diode = highest-assurance option."];
+  { rank=sink; HONEST; BLAST; }
+}

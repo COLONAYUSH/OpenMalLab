@@ -1,0 +1,63 @@
+// ============================================================================
+// MalAnalyzer - 09, Licensing isolation & transport-per-license-class
+// Source of truth: ADR-019/004; LICENSING-BRIEF (+ DESIGN-AUDIT A7).
+// Purpose: keep the Apache-2.0 core license-clean. Each copyleft engine is its
+// OWN process-isolated component inheriting its license; NOTHING copyleft is
+// imported in-process into the core. Because gRPC-core is Apache-2.0 and
+// Apache-2.0 is incompatible with GPLv2, COPYLEFT workers use a GPL-compatible
+// transport (CLI/pipe or BSD protobuf-over-UDS) - never Apache gRPC. The CI
+// license gate is BIDIRECTIONAL and transitive.
+// ============================================================================
+digraph licensing {
+  rankdir=LR;
+  bgcolor="white";
+  compound=true;
+  nodesep=0.3; ranksep=1.0;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - Licensing Isolation (transport per license class)</b><br/><font point-size="10">In-process import = a combined/derivative work regardless of containers. Process separation is mandatory; copyleft workers never link Apache gRPC.</font>>;
+  node [fontname="Helvetica", fontsize=9.5, shape=box, style="rounded,filled", penwidth=1.4, margin="0.12,0.07"];
+  edge [fontname="Helvetica", fontsize=9, color="#37474f", penwidth=1.2];
+
+  // ---- copyleft components (each its own process, inherits its license) --
+  subgraph cluster_copyleft {
+    label=<<b>Copyleft engines</b> - each its OWN separately-licensed, process-isolated component>;
+    style="rounded,filled"; color="#8d6e63"; fillcolor="#efebe9"; penwidth=1.8; fontcolor="#4e342e";
+    GPL2 [label="GPLv2: Qiling+Unicorn ,\nSpeakeasy->Unicorn (emulation)", fillcolor="#ffcdd2", color="#c62828"];
+    GPL3 [label="GPLv3: CAPE technique\n(clean-room Apache, or isolated worker)", fillcolor="#ffe0b2", color="#ef6c00"];
+    VSL  [label="VSL: Volatility 3\n(publish source, wrapper clause)", fillcolor="#e1bee7", color="#6a1b9a"];
+    AGPL [label="AGPLv3: MemProcFS, MISP ,\nGrafana, Loki (ship UNMODIFIED, section 13)", fillcolor="#d7ccc8", color="#5d4037"];
+    LGPL [label="LGPLv3: radare2 core\n(dynamic link-safe)", fillcolor="#bbdefb", color="#1565c0"];
+  }
+
+  // ---- CI gate (the boundary) -------------------------------------------
+  GATE [shape=octagon, penwidth=2, fillcolor="#fff3e0", color="#e65100", fontcolor="#e65100", fontsize=9.5,
+        label="CI LICENSE GATE\n(bidirectional, transitive)\nfails on: copyleft -> core\nAND Apache/incompatible -> copyleft worker\ncatches Speakeasy -> Unicorn"];
+
+  // ---- Apache-2.0 core --------------------------------------------------
+  subgraph cluster_core {
+    label=<<b>Apache-2.0 CORE</b> - links only permissive (Apache/BSD/MIT/MPL-file)>;
+    style="rounded,filled"; color="#2e7d32"; fillcolor="#e8f5e9"; penwidth=2.2; fontcolor="#1b5e20";
+    node [fillcolor="#c8e6c9", color="#2e7d32"];
+    CORE [label="gateway, orchestrator (Temporal), pump\ngRPC/proto contract\nGhidra, capa, FLOSS, Magika (Apache)"];
+    PERM [label="permissive infra:\nQdrant, OpenSearch, SeaweedFS, JanusGraph (Apache)\nYARA-X, Valkey (BSD), OpenBao (MPL-file)"];
+    CORE -> PERM [style=invis];
+  }
+
+  // ---- transports: copyleft uses GPL-compatible; core uses gRPC ----------
+  GPL2 -> GATE [label=" CLI/pipe or BSD\n proto-over-UDS\n (NOT Apache gRPC)", color="#c62828", fontcolor="#b71c1c", penwidth=1.5];
+  GPL3 -> GATE [label=" NET/CLI", color="#ef6c00"];
+  VSL  -> GATE [label=" NET (isolated)", color="#6a1b9a"];
+  AGPL -> GATE [label=" SVC (unmodified)", color="#5d4037"];
+  LGPL -> GATE [label=" dynamic link", color="#1565c0"];
+  GATE -> CORE [label=" normalized schema\n over IPC boundary", color="#2e7d32", penwidth=1.6, lhead=cluster_core];
+
+  // ---- the thing that must never happen ---------------------------------
+  GPL2 -> CORE [dir=both, arrowhead=tee, arrowtail=tee, color="#c62828", style=dashed, penwidth=2.2, constraint=false,
+                fontcolor="#b71c1c", label=<<b>NO in-process import</b><br/>in-process = derivative regardless of container;<br/>Apache-2.0 &#8596; GPLv2 are incompatible>];
+
+  NOTE [shape=note, fillcolor="#fff8e1", color="#e65100", style=filled, fontsize=9,
+        label="Phase-1 flag (A7 section 7): shellcode emulation via Speakeasy pulls\nUnicorn GPLv2 -> either drop emulation-based shellcode from\nPhase-1 (permissive static only) or ship a GPLv2-isolated worker.\nNeeds counsel sign-off (LICENSING-BRIEF Q1/Q2)."];
+  GATE -> NOTE [style=invis];
+}

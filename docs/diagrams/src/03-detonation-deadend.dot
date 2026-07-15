@@ -1,0 +1,95 @@
+// ============================================================================
+// MalAnalyzer - 03, Detonation dead-end, management plane & assume-breach
+// Source of truth: ADR-006/007/016 (+ DESIGN-AUDIT A2/A3/A9/A10/A15);
+// THREAT-MODEL G1/R1/R9/R10; PHASE1 section 5.2-5.3, invariants #8/#9.
+// Purpose: prove containment INCLUDING the channel round-1 missed - the VM
+// management/lifecycle plane. The detonation plane runs its OWN control loop;
+// EVERY control<->detonation interaction (dispatch, heartbeat, lease,
+// reconcile, kill, results) is detonation-local and surfaced to control only
+// by the pump PULLING a validated projection. No live inbound into control.
+// ============================================================================
+digraph detonation_deadend {
+  rankdir=LR;
+  bgcolor="white";
+  compound=true;
+  nodesep=0.35; ranksep=0.75;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - Detonation Dead-End &amp; Management Plane (assume-breach)</b><br/><font point-size="10">The detonation plane runs its own control loop. Every control&#8596;detonation channel is store-and-forward through the pump. A compromised host reaches nothing trusted.</font>>;
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", penwidth=1.4, margin="0.12,0.07"];
+  edge [fontname="Helvetica", fontsize=9, color="#37474f", penwidth=1.2];
+
+  // ---- Detonation plane -------------------------------------------------
+  subgraph cluster_det {
+    label=<<b>DETONATION PLANE</b> ,  separate physical node ,  own management network ,  non-nested HW ,  attested boot ,  bare-metal = firmware-burned>;
+    style="rounded,filled"; color="#c62828"; fillcolor="#ffebee"; penwidth=2.4; fontcolor="#b71c1c";
+    node [fillcolor="#ffcdd2", color="#c62828"];
+
+    DCTRL [label="Detonation-local controller\nOWN lease store, OWN libvirt clients\nreconciler, VM-kill, slot admission\n- holds NO control creds / NO route to control", fillcolor="#ef9a9a", penwidth=1.8];
+    RSTORE[label="Result store (out)\nper-run prefixes, liveness/lease state\n, DURABLE single-writer lease authority\n(what control PULLS a projection of)", shape=cylinder, style=filled];
+
+    subgraph cluster_slotA {
+      label=<<b>Run-slot 1</b> (isolated)>;
+      style="rounded,filled"; color="#8e0000"; fillcolor="#ffdede"; penwidth=1.4; fontcolor="#8e0000";
+      node [fillcolor="#ffcdd2", color="#c62828"];
+      VMA [label="Disposable VM (T2 KVM)\nqcow2 CoW, snapshot-restore\n+ guest agent  [!] guest->host surface\n(minimal, untrusted, one-way)", fillcolor="#ef9a9a"];
+      BRA [label="OWN bridge / netns\n(no host L3 presence)"];
+      TAPA[label="Passive tap\n(out-of-band capture =\nTRUSTWORTHY evidence)", fillcolor="#c8e6c9", color="#2e7d32"];
+      VMA -> BRA [arrowhead=none];
+      BRA -> TAPA [arrowhead=none, style=dotted, label=" mirror"];
+    }
+    subgraph cluster_slotB {
+      label=<<b>Run-slot 2</b> (isolated)>;
+      style="rounded,filled"; color="#8e0000"; fillcolor="#ffdede"; penwidth=1.4; fontcolor="#8e0000";
+      node [fillcolor="#ffcdd2", color="#c62828"];
+      VMB [label="Disposable VM\nOWN bridge + OWN store prefix"];
+    }
+
+    SIM [label="Sim-net appliance\nINetSim / FakeNet\nseparate netns, fake internet\negress default none/simulated", fillcolor="#c8e6c9", color="#2e7d32"];
+
+    DCTRL -> VMA [label=" start/kill (local)"];
+    DCTRL -> VMB [label=" start/kill (local)"];
+    DCTRL -> RSTORE [label=" liveness, lease, reconcile\n (all LOCAL)"];
+    VMA -> RSTORE [label=" in-guest report\n (UNTRUSTED/advisory)", color="#b71c1c", fontcolor="#b71c1c"];
+    TAPA -> RSTORE [label=" ground-truth PCAP", color="#2e7d32", fontcolor="#2e7d32"];
+    BRA -> SIM [arrowhead=none, label=" C2 answered by sim"];
+    VMB -> SIM [arrowhead=none, style=dashed];
+    // per-run isolation: slot 1 cannot touch slot 2
+    VMA -> VMB [dir=both, arrowhead=tee, arrowtail=tee, color="#c62828", style=dashed, penwidth=1.8,
+                fontcolor="#b71c1c", label=" per-run isolation\n (no cross-run reach)", constraint=false];
+  }
+
+  // ---- Mediation --------------------------------------------------------
+  PUMP [label="Write-only data pump\n(third network, pull-only)\nmover + network-dead validator\n-> see diagram 04", fillcolor="#ffe082", color="#f9a825", penwidth=1.8];
+  JOBQ [label="Job spool (third net)\ncontrol WRITES, detonation PULLS\n(no route written INTO detonation)", shape=cylinder, style=filled, fillcolor="#ffe082", color="#f9a825"];
+
+  // ---- Control plane ----------------------------------------------------
+  subgraph cluster_ctrl {
+    label=<<b>CONTROL PLANE</b> (trusted - must be unreachable from detonation)>;
+    style="rounded,filled"; color="#2e7d32"; fillcolor="#e8f5e9"; penwidth=2; fontcolor="#1b5e20";
+    node [fillcolor="#c8e6c9", color="#2e7d32"];
+    ORCH [label="Orchestrator\nenqueues jobs, PULLS validated\nstatus + results"];
+    VAULT[label="WORM vault + keys\n+ other-tenant pools", shape=cylinder, style=filled, fillcolor="#cfd8dc", color="#546e7a"];
+  }
+
+  // ---- cross-plane: store-and-forward through the pump, both directions --
+  ORCH -> JOBQ  [label=" enqueue job\n (control writes)", color="#e65100", penwidth=1.6];
+  JOBQ -> DCTRL [label=" controller PULLS\n (detonation initiates)", color="#e65100", penwidth=1.6, lhead=cluster_det];
+  RSTORE -> PUMP[label=" control PULLS\n (no inbound to control)", color="#e65100", penwidth=1.8, ltail=cluster_det];
+  PUMP -> ORCH  [label=" validated projection\n + canonical results", color="#e65100", penwidth=1.8, lhead=cluster_ctrl];
+
+  // ---- barred: nothing in detonation can reach control ------------------
+  DCTRL -> ORCH  [dir=both, arrowhead=tee, arrowtail=tee, color="#c62828", style=dashed, penwidth=2.4,
+                  constraint=false, fontcolor="#b71c1c",
+                  label=<<b>NO ROUTE, NO CREDS</b><br/>no live inbound, no libvirt/Temporal/Valkey<br/>credential reaches across the boundary>];
+  VMA -> VAULT   [color="#c62828", style=dashed, penwidth=2, arrowhead=tee, constraint=false,
+                  fontcolor="#b71c1c", label=" unreachable"];
+
+  // ---- callouts ---------------------------------------------------------
+  MGMT [shape=note, fillcolor="#fff8e1", color="#f9a825", style=filled, fontsize=9,
+        label="MANAGEMENT PLANE (the round-1 blind spot):\ndispatch, heartbeat, lease, reconcile, VM-kill\nare ALL detonation-local. Control never opens a\nlive connection into detonation and holds no\ndetonation credential - it only PULLS via the pump."];
+  TRUST [shape=note, fillcolor="#e8f5e9", color="#2e7d32", style=filled, fontsize=9,
+        label="VERDICT TRUST IS OUT-OF-BAND:\npassive tap + host attestation + (P2) VMI are\nground truth. The in-guest agent's self-report is\nadvisory: a benign self-report NEVER lowers a\nverdict; escape / anti-analysis indicators FLOOR\nthe run (and co-resident runs)."];
+  { rank=sink; MGMT; TRUST; }
+}

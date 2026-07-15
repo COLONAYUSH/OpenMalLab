@@ -1,0 +1,63 @@
+// ============================================================================
+// MalAnalyzer - 05, End-to-end sample lifecycle (fail-closed at every gate)
+// Source of truth: ARCHITECTURE section 4; PHASE1 section 6; ADR-003 (+ DESIGN-AUDIT A8).
+// Purpose: trace a submission through the pipeline and mark every point where
+// the design FAILS CLOSED - no crash/timeout/truncation/cap/blind-spot can
+// produce BENIGN by omission. The warranting gate fails TOWARD detonation.
+// ============================================================================
+digraph lifecycle {
+  rankdir=TB;
+  bgcolor="white";
+  nodesep=0.35; ranksep=0.5;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - Sample Lifecycle (fail-closed at every gate)</b><br/><font point-size="10">Plane colour = where each step runs. Amber octagons are fail-closed gates: no path here yields BENIGN by omission.</font>>;
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", penwidth=1.3, margin="0.14,0.07"];
+  edge [fontname="Helvetica", fontsize=9, color="#37474f", penwidth=1.2];
+
+  // plane colours
+  // control=green, data=blue, detonation=red, verdict/gate=amber
+  SUBMIT [label="(1) Submit -> gateway\nOIDC, OPA, audit", fillcolor="#c8e6c9", color="#2e7d32"];
+  VAULT  [label="Vault write\nSHA-256 dedup, envelope-enc, WORM", fillcolor="#cfd8dc", color="#546e7a", shape=cylinder, style=filled];
+  ROOT   [label="(2) Temporal root workflow", fillcolor="#c8e6c9", color="#2e7d32"];
+  IDENT  [label="(3) Identify (Magika)\nsandboxed, true type -> routing", fillcolor="#bbdefb", color="#1565c0"];
+  EXTRACT[label="(4) Extract (sandboxed)\nreject symlink/abs/.., size/entry caps", fillcolor="#bbdefb", color="#1565c0"];
+  STATIC [label="(5) Static fan-out (single-use, tenant-partitioned)\nML pre-verdict (non-authoritative), DIE/PE, FLOSS, capa/ATT&CK, doc/script/shellcode, YARA-X", fillcolor="#bbdefb", color="#1565c0"];
+  WARRANT[label="(6) detonation warranted?", shape=diamond, fillcolor="#fff3e0", color="#e65100", style=filled, height=0.9, width=1.7];
+  DETON  [label="(7) Detonate (slot-admitted, budget-gated)\nout-of-band evidence -> pump -> canonical schema", fillcolor="#ffcdd2", color="#c62828"];
+  AGG    [label="(8) Aggregate\nmonotone max over unique DAG nodes\n+ diversity signal", fillcolor="#fff3e0", color="#e65100"];
+  VERDICT[label="(9) Deterministic explainable verdict\nevery point -> finding + engine + ATT&CK", fillcolor="#c8e6c9", color="#2e7d32"];
+  PRESENT[label="(10) Present & collaborate (mediated, defanged)\n, (11) Export STIX/PDF/YARA/MISP - defanged", fillcolor="#c8e6c9", color="#2e7d32"];
+
+  // P2 side branches
+  HUNT   [label="Enrich & hunt (P2)\nTI, MCRIT, livehunt, graph", fillcolor="#e8f5e9", color="#2e7d32", style="rounded,filled,dashed"];
+  AI     [label="AI assist (P2)\nquarantined, per-case, entailment-verified\nadvisory, never a verdict field", fillcolor="#e0f2f1", color="#00695c", style="rounded,filled,dashed"];
+
+  SUBMIT -> VAULT -> ROOT -> IDENT -> EXTRACT -> STATIC -> WARRANT;
+  WARRANT -> DETON [label=" YES / inconclusive\n (fail toward dynamic)", color="#e65100", fontcolor="#e65100"];
+  WARRANT -> AGG   [label=" NO - clearly benign\n with full coverage only"];
+  DETON -> AGG;
+  AGG -> VERDICT -> PRESENT;
+  VERDICT -> HUNT [style=dashed, color="#9e9e9e"];
+  VERDICT -> AI   [style=dashed, color="#9e9e9e"];
+
+  // fail-closed callouts
+  FC1 [shape=octagon, fillcolor="#ffe082", color="#e65100", style=filled, fontsize=9, penwidth=1.6,
+       label="FAIL-CLOSED\ncap/zip-bomb/traversal ->\ntruncate + flag, branch = SUSPICIOUS\n+ analysis_incomplete (never BENIGN)"];
+  FC2 [shape=octagon, fillcolor="#ffe082", color="#e65100", style=filled, fontsize=9, penwidth=1.6,
+       label="FAIL-CLOSED\nstatic-inconclusive routes to dynamic;\nunanalyzed_region (overlay / entropy tail /\nunknown container) is a suspicion signal;\nno slot -> analysis_incomplete, not benign"];
+  FC3 [shape=octagon, fillcolor="#ffe082", color="#e65100", style=filled, fontsize=9, penwidth=1.6,
+       label="FAIL-CLOSED\ntruncation/timeout/crash -> SUSPICIOUS;\nescape / anti-analysis indicator -> MALICIOUS;\nbenign in-guest self-report never lowers"];
+  FC4 [shape=octagon, fillcolor="#ffe082", color="#e65100", style=filled, fontsize=9, penwidth=1.6,
+       label="INVARIANT: benign never masks malicious;\npadding can't dilute; SUSPICIOUS-by-truncation\nis blocking-severity (diagram 06)"];
+
+  EXTRACT -> FC1 [style=dotted, color="#e65100", arrowhead=none, constraint=false];
+  WARRANT -> FC2 [style=dotted, color="#e65100", arrowhead=none, constraint=false];
+  DETON   -> FC3 [style=dotted, color="#e65100", arrowhead=none, constraint=false];
+  AGG     -> FC4 [style=dotted, color="#e65100", arrowhead=none, constraint=false];
+  { rank=same; EXTRACT; FC1; }
+  { rank=same; WARRANT; FC2; }
+  { rank=same; DETON; FC3; }
+  { rank=same; AGG; FC4; }
+}

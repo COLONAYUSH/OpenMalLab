@@ -1,0 +1,91 @@
+// ============================================================================
+// MalAnalyzer - 02, Trust-boundary catalog (STRIDE per boundary)
+// Source of truth: docs/THREAT-MODEL.md section 1-2; ADRs cited per card.
+// Purpose: make all 8 trust boundaries first-class. Each card states what
+// crosses, in which direction, and the control that guards it. Row 1 = the
+// data-path boundaries a live submission traverses (left->right = deeper into
+// the system = closer to attacker-controlled bytes); row 2 = cross-cutting.
+// Boundary 3 (control<->detonation) is the critical one (heavy red header).
+// ============================================================================
+digraph trust_boundaries {
+  rankdir=TB;
+  bgcolor="white";
+  nodesep=0.4; ranksep=0.7;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - Trust Boundaries (STRIDE per boundary)</b><br/><font point-size="10">Row 1 = the live-submission data path (left&#8594;right: deeper into the system, closer to attacker-controlled bytes).  Row 2 = cross-cutting boundaries.</font>>;
+  node [shape=none, margin=0, fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=9.5, color="#546e7a"];
+
+  B1 [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="5">
+      <tr><td bgcolor="#2e7d32" align="center"><font color="white"><b>&#9312;  browser &#8596; gateway</b></font></td></tr>
+      <tr><td align="left"><b>Crosses:</b> auth, submissions, queries</td></tr>
+      <tr><td align="left"><b>Threats:</b> spoofing, privilege elevation</td></tr>
+      <tr><td align="left"><b>Control:</b> OIDC, OPA default-deny ,<br align="left"/>short tokens, no <i>alg=none</i>, audit<br align="left"/><font color="#1565c0">(ADR-014/016)</font></td></tr>
+    </table>>];
+
+  B2 [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="5">
+      <tr><td bgcolor="#1565c0" align="center"><font color="white"><b>&#9313;  control &#8596; data plane</b></font></td></tr>
+      <tr><td align="left"><b>Crosses:</b> 1 signed single-use URL in ,<br align="left"/>findings out</td></tr>
+      <tr><td align="left"><b>Threats:</b> tampering, DoS, disclosure</td></tr>
+      <tr><td align="left"><b>Control:</b> single-use sandboxed workers ,<br align="left"/>empty netns, cgroups, seccomp<br align="left"/><font color="#1565c0">(ADR-004/005)</font></td></tr>
+    </table>>];
+
+  B3 [label=<
+    <table border="0" cellborder="2" cellspacing="0" cellpadding="5" color="#b71c1c">
+      <tr><td bgcolor="#b71c1c" align="center"><font color="white"><b>&#9314;  control &#8596; detonation  &#9888;</b></font></td></tr>
+      <tr><td align="left"><b>Crosses:</b> job dispatch in (via pump) ,<br align="left"/>results out (pull only) ,<br align="left"/>mgmt (heartbeat/lease/reconcile) is<br align="left"/>detonation-local - never a live inbound</td></tr>
+      <tr><td align="left"><b>Threats:</b> escape&#8594;pivot, DoS, exfil ,<br align="left"/>host-forged benign result</td></tr>
+      <tr><td align="left"><b>Control:</b> dead-ended (no route/creds) ,<br align="left"/>own bus+store, slot admission ,<br align="left"/>non-nested HW, attested boot<br align="left"/><font color="#1565c0">(ADR-006/007/016)</font></td></tr>
+    </table>>];
+
+  B4 [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="5">
+      <tr><td bgcolor="#e65100" align="center"><font color="white"><b>&#9315;  mal-pump mediation</b></font></td></tr>
+      <tr><td align="left"><b>Crosses:</b> only a bounded canonical schema</td></tr>
+      <tr><td align="left"><b>Threats:</b> malicious payload &#8594; RCE in core</td></tr>
+      <tr><td align="left"><b>Control:</b> pull-only, strict JSON-Schema ,<br align="left"/>sandboxed parser ,<br align="left"/>no complex deserialization<br align="left"/><font color="#1565c0">(ADR-007)</font></td></tr>
+    </table>>];
+
+  B5 [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="5">
+      <tr><td bgcolor="#6a1b9a" align="center"><font color="white"><b>&#9316;  analyst render</b></font></td></tr>
+      <tr><td align="left"><b>Crosses:</b> sample-derived text/artifacts<br align="left"/>to the browser</td></tr>
+      <tr><td align="left"><b>Threats:</b> XSS, homoglyph, CSRF, drive-by</td></tr>
+      <tr><td align="left"><b>Control:</b> inert render, defang, CSP ,<br align="left"/>sandboxed iframes ,<br align="left"/>encrypted single-sample downloads<br align="left"/><font color="#1565c0">(ADR-009/015)</font></td></tr>
+    </table>>];
+
+  B6 [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="5">
+      <tr><td bgcolor="#00695c" align="center"><font color="white"><b>&#9317;  AI quarantine  (P2)</b></font></td></tr>
+      <tr><td align="left"><b>Crosses:</b> schema-constrained<br align="left"/>extractions only</td></tr>
+      <tr><td align="left"><b>Threats:</b> prompt injection, trifecta exfil</td></tr>
+      <tr><td align="left"><b>Control:</b> dual-LLM/CaMeL ,<br align="left"/>per-case token &#8834; human ,<br align="left"/>no egress in sample context<br align="left"/><font color="#1565c0">(ADR-010)</font></td></tr>
+    </table>>];
+
+  B7 [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="5">
+      <tr><td bgcolor="#455a64" align="center"><font color="white"><b>&#9318;  tenant  (P2)</b></font></td></tr>
+      <tr><td align="left"><b>Crosses:</b> nothing - hard isolation<br align="left"/>by default</td></tr>
+      <tr><td align="left"><b>Threats:</b> cross-tenant read of the vault</td></tr>
+      <tr><td align="left"><b>Control:</b> separate schemas/keys ,<br align="left"/>tenant-partitioned workers ,<br align="left"/>RLS as defense-in-depth<br align="left"/><font color="#1565c0">(ADR-016)</font></td></tr>
+    </table>>];
+
+  B8 [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="5">
+      <tr><td bgcolor="#5d4037" align="center"><font color="white"><b>&#9319;  build / update supply chain</b></font></td></tr>
+      <tr><td align="left"><b>Crosses:</b> images, deps ,<br align="left"/>model weights, corpora</td></tr>
+      <tr><td align="left"><b>Threats:</b> poisoned dep / image / model</td></tr>
+      <tr><td align="left"><b>Control:</b> in-toto attestations ,<br align="left"/>witnessed signing, SBOM ,<br align="left"/>reproducible builds, model provenance<br align="left"/><font color="#1565c0">(ADR-020)</font></td></tr>
+    </table>>];
+
+  { rank=same; B1; B2; B3; B4; }
+  { rank=same; B5; B6; B7; B8; }
+  // data-path progression (visible)
+  B1 -> B2 -> B3 -> B4 [color="#37474f", penwidth=1.4, arrowsize=0.8, minlen=1];
+  // stack row 2 under row 1, column-aligned (invisible)
+  B1 -> B5 [style=invis]; B2 -> B6 [style=invis]; B3 -> B7 [style=invis]; B4 -> B8 [style=invis];
+}

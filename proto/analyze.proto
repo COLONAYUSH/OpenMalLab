@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package openmallab.v1;
+
+// The engine contract. Every worker that touches hostile bytes implements this.
+// A worker gets exactly one artifact, runs once, then dies. It has no network
+// and no store credentials. It returns findings and the orchestrator writes them.
+//
+// AnalyzeResult is a hostile-derived boundary, so we treat it like one. The
+// orchestrator-side broker decodes it in an unprivileged, seccomp-strict,
+// network-dead sub-process before anything trusted reads it, and the schema is
+// bounded on purpose:
+//   - hard caps on every repeated field and every string length
+//   - total size stays under the durable-store payload limit
+//   - no Any, no nested arbitrary objects
+// Anything that busts a cap fails closed (the node floors to SUSPICIOUS).
+
+service Engine {
+  rpc Analyze(AnalyzeRequest) returns (AnalyzeResult);
+  rpc Health(Empty) returns (HealthStatus);
+}
+
+message Empty {}
+
+message HealthStatus {
+  bool ok = 1;
+  string engine = 2;
+}
+
+message AnalyzeRequest {
+  string artifact_sha256 = 1;   // content-addressed handle into the vault
+  string submission_id   = 2;
+  string parent_node_id  = 3;
+  int32  depth           = 4;   // orchestrator supplied; workers never recurse themselves
+  string domain_id       = 5;   // trust domain (one in phase 1, present from day one)
+  map<string, string> context = 6;
+  // the artifact bytes arrive as a read-only mounted fd, not over this rpc and
+  // not as a url the worker resolves. the worker holds no fetch credential.
+}
+
+// Ordered so numeric max means most-suspicious-wins. BENIGN is the optimistic
+// bottom, so a benign result never masks UNKNOWN, SUSPICIOUS, or MALICIOUS.
+enum Verdict {
+  BENIGN = 0;
+  UNKNOWN = 1;
+  SUSPICIOUS = 2;
+  MALICIOUS = 3;
+}
+
+message AnalyzeResult {
+  repeated Finding findings   = 1;   // capped
+  repeated Child   children   = 2;   // extracted artifacts to re-enter the pipeline, capped
+  Verdict verdict             = 3;   // this node's local verdict only, advisory to the broker
+  repeated Evidence evidence  = 4;   // every score point cites at least one
+  repeated string attack_tags = 5;   // ATT&CK / MBC ids, capped
+  Truncation truncation       = 6;   // set if the worker hit its own budget
+  string engine               = 7;   // name@version, part of the idempotency key
+}
+
+message Finding {
+  string type = 1;
+  string severity = 2;
+  repeated string attck = 3;
+  string detail = 4;   // sample-derived text, rendered inert before it is ever displayed
+}
+
+message Evidence {
+  string kind = 1;     // pcap, string, decompiler, screenshot, ...
+  string ref = 2;
+  string excerpt = 3;  // inert
+}
+
+message Child {
+  string sha256 = 1;   // the broker re-hashes the actual bytes and rejects a mismatch
+  int64  size = 2;
+  string path_sanitized = 3;
+}
+
+message Truncation {
+  bool truncated = 1;
+  string reason = 2;
+  int64 dropped_count = 3;
+}

@@ -1,0 +1,58 @@
+// ============================================================================
+// MalAnalyzer - 08, Deployment tiers & the PER-TOPOLOGY dead-end
+// Source of truth: ADR-017; ARCHITECTURE section 5 (+ DESIGN-AUDIT A1, residual R10).
+// Purpose: the containment boundary (3) (control<->detonation) is a TOPOLOGY
+// property. At all-in-one single-node it DOES NOT EXIST (shared kernel). It
+// materialises only when detonation is a physically separate node. Draw it
+// honestly per tier so no diagram implies a boundary a deployment lacks.
+// ============================================================================
+digraph deployment_tiers {
+  rankdir=TB;
+  bgcolor="white";
+  nodesep=0.45; ranksep=0.55;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - Deployment Tiers &amp; the Per-Topology Dead-End</b><br/><font point-size="10">Boundary (3) (the escape-containment boundary) exists only when detonation is a physically separate node. All-in-one single-node has no (3).</font>>;
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", penwidth=1.4, margin="0.14,0.08"];
+  edge [fontname="Helvetica", fontsize=9, color="#37474f", penwidth=1.2];
+
+  subgraph cluster_solo {
+    label=<<b>SOLO / all-in-one</b> ,  compose/Podman, 32-64 GB, dev / eval>;
+    style="rounded,filled"; color="#c62828"; fillcolor="#fff5f5"; penwidth=1.8; fontcolor="#b71c1c";
+    SHOST [label="ONE host, ONE kernel\ncontrol services + Tier-1 EMULATION (same kernel)\nOllama, extraction-only AI, PG(+pgvector/AGE), PG-FTS", fillcolor="#ffe0e0", color="#c62828"];
+    SB    [shape=octagon, penwidth=1.8, fillcolor="#ffcdd2", color="#b71c1c", fontcolor="#b71c1c",
+           label="boundary (3) ABSENT\na guest escape lands on the\ncontrol plane + keys\nNOT escape-contained ->\nTier-1 emu / simulated-net ONLY"];
+    SREM  [label="(optional) remote detonation\nto a shared SEPARATE pool\n= borrows Team-tier (3)", style="rounded,filled,dashed", fillcolor="#eceff1", color="#546e7a"];
+    { rank=same; SHOST; SB; SREM; }
+    SHOST -> SB [style=invis]; SB -> SREM [style=invis];
+  }
+
+  subgraph cluster_team {
+    label=<<b>TEAM / small air-gap</b> ,  K3s + 1+ bare-metal + GPU>;
+    style="rounded,filled"; color="#2e7d32"; fillcolor="#f4fbf4"; penwidth=1.8; fontcolor="#1b5e20";
+    TC [label="Control node (K3s)\ngateway, orchestrator, stores\nQdrant + graph + OpenSearch, vLLM (>=24 GB)", fillcolor="#c8e6c9", color="#2e7d32"];
+    TB [shape=octagon, penwidth=1.8, fillcolor="#c8e6c9", color="#2e7d32", fontcolor="#1b5e20",
+        label="boundary (3) PRESENT\nown kernel + own network\nno route / no creds to control"];
+    TD [label="SEPARATE bare-metal\ndetonation node\nT1-T2 KVM, optional 1 Xen", fillcolor="#ffcdd2", color="#c62828"];
+    { rank=same; TC; TB; TD; }
+    TC -> TB [style=invis]; TB -> TD [style=invis];
+  }
+
+  subgraph cluster_ent {
+    label=<<b>ENTERPRISE</b> ,  K8s (stateless) + out-of-band detonation controller>;
+    style="rounded,filled"; color="#2e7d32"; fillcolor="#f4fbf4"; penwidth=1.8; fontcolor="#1b5e20";
+    EC [label="K8s stateless planes\nHA PG (split OLTP/analytics), Qdrant, graph, OpenSearch\nvLLM fleet (A100/H100) + gated cloud", fillcolor="#c8e6c9", color="#2e7d32"];
+    EB [shape=octagon, penwidth=1.8, fillcolor="#c8e6c9", color="#2e7d32", fontcolor="#1b5e20",
+        label="boundary (3) PRESENT (strongest)\ndedicated HW pools\nout-of-K8s controller"];
+    ED [label="Bare-metal detonation pools\nT1-T3 + bare-metal + BYO-mac\nphysically bounded (not pod-scalable)", fillcolor="#ffcdd2", color="#c62828"];
+    { rank=same; EC; EB; ED; }
+    EC -> EB [style=invis]; EB -> ED [style=invis];
+  }
+
+  SHOST -> TC [style=invis]; TC -> EC [style=invis];
+
+  NOTE [shape=note, fillcolor="#fff8e1", color="#e65100", style=filled, fontsize=9.5,
+        label="Escape-containment REQUIRES a physically separate detonation node.\nAll-in-one single-node (Solo) has no boundary (3) - use it for dev/eval or\nTier-1-emulation / simulated-net only, never for escape-risk detonation.\nPhase-1 reference deploy = control node + ONE separate detonation host.\n(DESIGN-AUDIT A1, residual R10)"];
+  ED -> NOTE [style=invis];
+}

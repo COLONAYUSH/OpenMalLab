@@ -1,0 +1,70 @@
+// ============================================================================
+// MalAnalyzer - 07, AI quarantine (dual-LLM / CaMeL) - Phase-2
+// Source of truth: ADR-010/014; THREAT-MODEL G4 (+ DESIGN-AUDIT A13).
+// Purpose: show that quarantine CAPS BLAST RADIUS (it does not make the planner
+// uninfluenced). The planner never sees raw bytes but does consume attacker-
+// influenced schema values, so its AUTHORITY (a strict tool subset with
+// cross-case/tenant/global/egress tools ABSENT) is the real control.
+// ============================================================================
+digraph ai_quarantine {
+  rankdir=LR;
+  bgcolor="white";
+  compound=true;
+  nodesep=0.4; ranksep=0.7;
+  pad=0.4;
+  fontname="Helvetica"; fontsize=11;
+  labelloc=t;
+  label=<<b>MalAnalyzer - AI Quarantine (dual-LLM / CaMeL), Phase-2</b><br/><font point-size="10">Quarantine caps blast radius; it does not make the planner uninfluenced. The planner's authority is the control. AI is advisory, never a verdict field.</font>>;
+  node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", penwidth=1.4, margin="0.13,0.08"];
+  edge [fontname="Helvetica", fontsize=9, color="#37474f", penwidth=1.2];
+
+  HOSTILE [label="Sample-derived content\nstrings, decompiled text, config\n(HOSTILE input to the model)", fillcolor="#ffcdd2", color="#c62828"];
+
+  subgraph cluster_q {
+    label=<<b>QUARANTINED model</b> - NO tools>;
+    style="rounded,filled"; color="#00695c"; fillcolor="#e0f2f1"; penwidth=2; fontcolor="#00695c";
+    node [fillcolor="#b2dfdb", color="#00695c"];
+    QMODEL [label="reads hostile content\nreturns ONLY schema-constrained\nextractions (typed fields)"];
+  }
+
+  subgraph cluster_p {
+    label=<<b>PRIVILEGED planner</b> - tool-calling, never sees raw bytes>;
+    style="rounded,filled"; color="#1565c0"; fillcolor="#e3f2fd"; penwidth=2; fontcolor="#0d47a1";
+    node [fillcolor="#bbdefb", color="#1565c0"];
+    PLAN [label="plans multi-step investigation\nover a PER-CASE tool set\n(capability subset of a human's)"];
+    subgraph cluster_tools {
+      label="tools available";
+      style="rounded,filled"; color="#2e7d32"; fillcolor="#e8f5e9"; penwidth=1.2; fontcolor="#1b5e20";
+      node [fillcolor="#c8e6c9", color="#2e7d32", fontsize=9];
+      T1 [label="this-artifact RE"];
+      T2 [label="per-case retrieval"];
+    }
+    PLAN -> T1 [style=invis]; PLAN -> T2 [style=invis];
+  }
+
+  ABSENT [shape=box, style="rounded,filled,dashed", fillcolor="#ffebee", color="#c62828", fontcolor="#b71c1c", fontsize=9,
+          label="TOOLS DELIBERATELY ABSENT (barred)\nx cross-case   x cross-tenant\nx global retrohunt/query\nx external comms / egress\n(human-initiated only)"];
+
+  ENTAIL [label="Entailment verifier\nstructured claim -> cited evidence\nreject uncited AND cited-but-unsupported", fillcolor="#fff3e0", color="#e65100"];
+  INERT  [label="Inert-render / defang\n(AI output is attacker-influenced\ncontent - no live links)", fillcolor="#ede7f6", color="#6a1b9a"];
+  ANALYST[label="Analyst\nAI shown beside evidence,\nlabeled advisory", fillcolor="#e1bee7", color="#6a1b9a"];
+
+  VERDICT[label="Deterministic verdict\n(engines only - LLM is NEVER\na field in the scored record)", fillcolor="#c8e6c9", color="#2e7d32", penwidth=2];
+
+  CLOUD  [label="Cloud escalation\nHUMAN out-of-band, structural\nderivatives only, two-person\n(impossible in air-gap mode)", fillcolor="#eceff1", color="#546e7a", style="rounded,filled,dashed"];
+
+  HOSTILE -> QMODEL [label=" reads", lhead=cluster_q];
+  QMODEL -> PLAN [label=" schema values\n (attacker-INFLUENCED)", color="#c62828", fontcolor="#b71c1c", penwidth=1.6, ltail=cluster_q, lhead=cluster_p];
+  PLAN -> ENTAIL [label=" draft claims", ltail=cluster_p];
+  ENTAIL -> INERT -> ANALYST;
+
+  // planner authority: the absent tools are the control
+  PLAN -> ABSENT [dir=both, arrowhead=tee, arrowtail=tee, color="#c62828", style=dashed, penwidth=2, constraint=false,
+                  fontcolor="#b71c1c", label=" no access"];
+
+  // verdict is independent
+  VERDICT -> ANALYST [style=dashed, color="#2e7d32", label=" authoritative (separate)"];
+  PLAN -> CLOUD [style=dashed, color="#9e9e9e", label=" only via human", constraint=false];
+
+  { rank=same; ABSENT; ENTAIL; }
+}
