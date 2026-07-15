@@ -1,0 +1,13 @@
+# Rust workspace for the hostile-input workers. these run single-use, with no
+# credentials and no network, in an empty network namespace. safety comes from
+# the sandbox, not the language, but rust buys us memory safety on our own
+# first-touch code for free. see docs/M0-FIRST-COMMIT.md.
+[workspace]
+resolver = "2"
+members = [
+    "services/mal-ident",
+    "services/mal-extract",
+]
+
+[profile.release]
+opt-level = 2

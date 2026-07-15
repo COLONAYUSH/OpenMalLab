@@ -13,6 +13,9 @@ Thumbs.db
 *.test
 *.out
 vendor/
+# stray service binaries if built without -o (build into bin/ instead)
+/mal-gateway
+/mal-orchestrator
 
 # Rust
 target/
