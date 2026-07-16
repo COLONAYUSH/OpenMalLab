@@ -5,13 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 )
 
 const (
 	maxInputBytes = 1 << 20 // 1 MiB, well under the durable-store payload limit
 	maxFindings   = 1000
+	maxChildren   = 1000 // an extractor manifest lists at most this many children
 	maxStringLen  = 8192
 )
+
+// a child's sha256 is about to key a vault path upstream; it must be exactly
+// 64 lowercase hex, nothing else.
+var childSHA = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 type finding struct {
 	Engine  string `json:"engine"`
@@ -21,9 +27,19 @@ type finding struct {
 	Verdict string `json:"verdict"`
 }
 
+// child is one artifact an extractor pulled out of a container. its sha256 is
+// the content address the orchestrator will re-verify and key the vault on;
+// name is display-only (the path inside the archive), never a filesystem path.
+type child struct {
+	SHA256 string `json:"sha256"`
+	Size   uint64 `json:"size"`
+	Name   string `json:"name"`
+}
+
 type report struct {
 	Engine     string    `json:"engine"`
 	Findings   []finding `json:"findings"`
+	Children   []child   `json:"children,omitempty"`
 	Verdict    string    `json:"verdict"`
 	Incomplete bool      `json:"incomplete"`
 }
@@ -95,6 +111,20 @@ func validate(r io.Reader) ([]byte, error) {
 			if err := checkStr(c.field, c.s); err != nil {
 				return nil, err
 			}
+		}
+	}
+
+	if len(rep.Children) > maxChildren {
+		return nil, fmt.Errorf("too many children: %d", len(rep.Children))
+	}
+	for i, c := range rep.Children {
+		// the sha keys a vault path upstream; enforce its shape here, at the
+		// boundary, so no trusted code ever splices a hostile string into a path.
+		if !childSHA.MatchString(c.SHA256) {
+			return nil, fmt.Errorf("child %d has a malformed sha256 %q", i, c.SHA256)
+		}
+		if err := checkStr("child.name", c.Name); err != nil {
+			return nil, err
 		}
 	}
 

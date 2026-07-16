@@ -106,14 +106,29 @@ type Finding struct {
 	Detail  string  `json:"detail"`
 	Attck   string  `json:"attck,omitempty"` // mitre att&ck technique, when the engine maps one
 	Verdict Verdict `json:"verdict"`
+	// Path is the breadcrumb from the root submission to the artifact this
+	// finding came from, e.g. "outer.zip!dir/inner.exe". the orchestrator
+	// (trusted) sets it while folding recursive results; engines never emit it.
+	Path string `json:"path,omitempty"`
 }
 
-// EngineReport is one engine's validated contribution: its findings and its
-// local rolled-up verdict. the orchestrator only ever builds this from
-// broker-validated bytes, then re-rolls the submission verdict itself.
+// Child is one artifact an extractor pulled out of a container. SHA256 is the
+// content address; Name is display-only (the path inside the archive). the
+// orchestrator re-hashes the staged bytes before trusting SHA256.
+type Child struct {
+	SHA256 string `json:"sha256"`
+	Size   uint64 `json:"size"`
+	Name   string `json:"name"`
+}
+
+// EngineReport is one engine's validated contribution: its findings, any
+// children it extracted, and its local rolled-up verdict. the orchestrator
+// only ever builds this from broker-validated bytes, then re-rolls the
+// submission verdict itself.
 type EngineReport struct {
 	Engine     string    `json:"engine"`
 	Findings   []Finding `json:"findings"`
+	Children   []Child   `json:"children,omitempty"`
 	Verdict    Verdict   `json:"verdict"`
 	Incomplete bool      `json:"incomplete"`
 }

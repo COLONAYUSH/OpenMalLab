@@ -5,3 +5,13 @@ edition = "2021"
 publish = false
 
 [dependencies]
+# Pure-Rust extraction only, so the worker stays a static musl binary on
+# scratch like mal-static-yara. deflate reading uses flate2's rust backend
+# (miniz_oxide); no C archive libraries. Formats we cannot decompress (bzip2,
+# lzma, zstd, encrypted) are skipped per-entry and flagged, never guessed.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+tar = "0.4.46"
+flate2 = "1.1.9"
+sha2 = "0.10.9"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"

@@ -9,6 +9,31 @@ import (
 
 const goodReport = `{"engine":"mal-static-yara","findings":[{"engine":"mal-static-yara","type":"yara","detail":"eicar_test_file","attck":"T1204","verdict":"MALICIOUS"}],"verdict":"MALICIOUS","incomplete":false}`
 
+const (
+	goodSHA  = "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
+	upperHex = "275A021BBFB6489E54D471899F7DB9D1663FC695EC2FE2A2C4538AABF651FD0F"
+	nonHex   = "zzza021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
+)
+
+const goodExtract = `{"engine":"mal-extract","findings":[{"engine":"mal-extract","type":"archive","detail":"zip","attck":"","verdict":"UNKNOWN"}],"children":[{"sha256":"` + goodSHA + `","size":42,"name":"dir/inner.exe"}],"verdict":"UNKNOWN","incomplete":false}`
+
+func TestValidateAcceptsAnExtractManifest(t *testing.T) {
+	out, err := validate(strings.NewReader(goodExtract))
+	if err != nil {
+		t.Fatalf("rejected a good extract manifest: %v", err)
+	}
+	var rep report
+	if err := json.Unmarshal(out, &rep); err != nil {
+		t.Fatalf("emitted unparseable output: %v", err)
+	}
+	if len(rep.Children) != 1 || rep.Children[0].SHA256 != goodSHA || rep.Children[0].Size != 42 {
+		t.Fatalf("mangled the children: %+v", rep.Children)
+	}
+	if rep.Children[0].Name != "dir/inner.exe" {
+		t.Fatalf("child name not preserved: %q", rep.Children[0].Name)
+	}
+}
+
 func TestValidateAcceptsARealWorkerReport(t *testing.T) {
 	out, err := validate(strings.NewReader(goodReport))
 	if err != nil {
@@ -38,6 +63,10 @@ func TestValidateRejects(t *testing.T) {
 		"unknown sub-field":   `{"engine":"x","findings":[{"engine":"x","type":"t","detail":"d","attck":"","verdict":"UNKNOWN","extra":true}],"verdict":"UNKNOWN","incomplete":false}`,
 		"trailing document":   `{"engine":"x","findings":[],"verdict":"UNKNOWN","incomplete":false}{"second":true}`,
 		"wrong types":         `{"engine":7,"findings":[],"verdict":"UNKNOWN","incomplete":false}`,
+		"short child sha":     `{"engine":"x","findings":[],"children":[{"sha256":"abc","size":1,"name":"a"}],"verdict":"UNKNOWN","incomplete":false}`,
+		"uppercase child sha": `{"engine":"x","findings":[],"children":[{"sha256":"` + upperHex + `","size":1,"name":"a"}],"verdict":"UNKNOWN","incomplete":false}`,
+		"non-hex child sha":   `{"engine":"x","findings":[],"children":[{"sha256":"` + nonHex + `","size":1,"name":"a"}],"verdict":"UNKNOWN","incomplete":false}`,
+		"unknown child field": `{"engine":"x","findings":[],"children":[{"sha256":"` + goodSHA + `","size":1,"name":"a","path":"/etc"}],"verdict":"UNKNOWN","incomplete":false}`,
 	}
 	for name, in := range cases {
 		if out, err := validate(strings.NewReader(in)); err == nil {
@@ -105,6 +134,8 @@ func FuzzValidate(f *testing.F) {
 	f.Add([]byte(``))
 	f.Add([]byte(`[[[[[[`))
 	f.Add([]byte("{\"engine\":\"\\u0000\",\"findings\":[],\"verdict\":\"BENIGN\",\"incomplete\":true}"))
+	f.Add([]byte(goodExtract))
+	f.Add([]byte(`{"engine":"x","findings":[],"children":[{"sha256":"abc","size":1,"name":"a"}],"verdict":"UNKNOWN","incomplete":false}`))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		out, err := validate(bytes.NewReader(data))
@@ -140,6 +171,19 @@ func FuzzValidate(f *testing.F) {
 				if len(s) > maxStringLen {
 					t.Fatal("accepted an oversized finding string")
 				}
+			}
+		}
+		if len(rep.Children) > maxChildren {
+			t.Fatal("accepted too many children")
+		}
+		for _, c := range rep.Children {
+			// the single most important child invariant: whatever is accepted,
+			// its sha256 is safe to splice into a vault path upstream.
+			if !childSHA.MatchString(c.SHA256) {
+				t.Fatalf("accepted a malformed child sha256 %q", c.SHA256)
+			}
+			if len(c.Name) > maxStringLen {
+				t.Fatal("accepted an oversized child name")
 			}
 		}
 		// idempotence: our own output must be a fixed point.
