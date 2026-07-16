@@ -17,6 +17,7 @@
 set -euo pipefail
 
 WORKER_IMAGE="${WORKER_IMAGE:-openmallab/mal-static-yara:m0}"
+IDENT_IMAGE="${IDENT_IMAGE:-openmallab/mal-ident:m0}"
 BROKER_IMAGE="${BROKER_IMAGE:-openmallab/mal-broker:m0}"
 PROBE_IMAGE="${PROBE_IMAGE:-busybox:1.36}"
 
@@ -60,6 +61,8 @@ JAIL=(
 
 docker image inspect "$WORKER_IMAGE" >/dev/null 2>&1 \
   || fail "worker image $WORKER_IMAGE not built; run: docker compose -f deploy/compose.yaml --profile build build"
+docker image inspect "$IDENT_IMAGE" >/dev/null 2>&1 \
+  || fail "ident image $IDENT_IMAGE not built; run: docker compose -f deploy/compose.yaml --profile build build"
 docker image inspect "$BROKER_IMAGE" >/dev/null 2>&1 \
   || fail "broker image $BROKER_IMAGE not built; run: docker compose -f deploy/compose.yaml --profile build build"
 
@@ -163,6 +166,29 @@ if docker run --rm "${JAIL[@]}" --entrypoint /bin/sh "$WORKER_IMAGE" -c true >/d
   fail "worker image has a shell"
 fi
 pass "worker image has no shell, no coreutils, nothing but the binary"
+
+# ---- the magika ident engine, same jail -------------------------------------
+# a second engine on a heavier runtime (onnx) proves the recipe is not
+# yara-specific: no network, all caps dropped, read-only, and clean stdout the
+# broker accepts. the sample is a tiny python snippet (benign, not eicar).
+
+IDENT_OUT=$(docker run --rm "${JAIL[@]}" \
+  --mount "type=volume,src=$VOL,dst=/in/sample,volume-subpath=$SHA,ro" \
+  "$IDENT_IMAGE" 2>/dev/null)
+echo "$IDENT_OUT" | grep -q '"engine":"mal-ident"' || fail "ident produced no report: $IDENT_OUT"
+echo "$IDENT_OUT" | grep -q '"type":"file-type"' || fail "ident produced no file-type finding: $IDENT_OUT"
+pass "jailed magika ident ran with no network and identified the sample"
+
+# its stdout must be exactly what the broker accepts: the onnx runtime's
+# diagnostics go to stderr, never polluting the one json line.
+echo "$IDENT_OUT" | docker run --rm -i "${JAIL[@]}" "$BROKER_IMAGE" >/dev/null \
+  || fail "broker rejected ident output (stdout not clean?)"
+pass "jailed broker accepts the ident output: engine stdout is clean"
+
+if docker run --rm "${JAIL[@]}" --entrypoint /bin/sh "$IDENT_IMAGE" -c true >/dev/null 2>&1; then
+  fail "ident image has a shell"
+fi
+pass "ident image has no shell despite its glibc closure: binary and runtime only"
 
 # ---- the broker gate, itself jailed -----------------------------------------
 

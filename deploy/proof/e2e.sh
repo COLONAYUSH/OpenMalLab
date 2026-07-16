@@ -82,19 +82,26 @@ f = [x for x in d["findings"] if x["engine"] == "mal-static-yara" and x["detail"
 assert f, "no mal-static-yara eicar finding: %s" % d["findings"]
 assert f[0]["verdict"] == "MALICIOUS", f
 assert f[0]["attck"] == "T1204", f
+# both engines ran in parallel: magika identified the file type as evidence.
+ident = [x for x in d["findings"] if x["engine"] == "mal-ident" and x["type"] == "file-type"]
+assert ident, "no mal-ident file-type finding: %s" % d["findings"]
+assert d["file_type"], "submission carries no rolled-up file_type: %s" % d
 ' || fail "eicar findings wrong: $BODY"
-say "eicar -> MALICIOUS with the mal-static-yara finding. the jail spoke, the broker validated."
+FT=$(echo "$BODY" | jget file_type)
+say "eicar -> MALICIOUS (yara) and identified as '$FT' (magika), both jailed, both brokered."
 
 say "submitting a benign file"
 ID2=$(submit "$TMP/benign.txt")
 BODY2=$(await_verdict "$ID2")
 V2=$(echo "$BODY2" | jget verdict)
 I2=$(echo "$BODY2" | jget incomplete)
+FT2=$(echo "$BODY2" | jget file_type)
 [ "$V2" = "UNKNOWN" ] || fail "benign verdict $V2, want UNKNOWN (honest: no engine earns BENIGN yet): $BODY2"
 [ "$I2" = "False" ] || fail "benign incomplete=$I2, want false: $BODY2"
-say "benign -> UNKNOWN, complete. nothing is benign by omission."
+[ -n "$FT2" ] || fail "benign carries no file_type: $BODY2"
+say "benign -> UNKNOWN, complete, identified as '$FT2'. nothing is benign by omission."
 
 echo ""
 echo "E2E PROOF PASSED"
-echo "  eicar:  $ID -> MALICIOUS (mal-static-yara: eicar_test_file, T1204)"
-echo "  benign: $ID2 -> UNKNOWN"
+echo "  eicar:  $ID -> MALICIOUS (yara: eicar_test_file, T1204; magika: $FT)"
+echo "  benign: $ID2 -> UNKNOWN (magika: $FT2)"

@@ -1,8 +1,9 @@
-// StaticAnalyzeActivity is the enforcement path from DESIGN-AUDIT RC-2, made
-// real: the artifact is scanned inside a jailed single-use container, the
-// worker's raw bytes go only to a jailed broker, and the orchestrator decodes
-// nothing but the broker's validated output. every failure floors upward,
-// never down to benign.
+// the engine activities are the enforcement path from DESIGN-AUDIT RC-2, made
+// real: every engine runs inside a jailed single-use container, the worker's
+// raw bytes go only to a jailed broker, and the orchestrator decodes nothing
+// but the broker's validated output. one code path for every engine, so a new
+// engine cannot accidentally invent a weaker boundary. every failure floors
+// upward, never down to benign.
 package main
 
 import (
@@ -21,13 +22,15 @@ import (
 )
 
 // Analyzer owns the docker handle and the jail parameters. registered as the
-// activity receiver so the workflow can call StaticAnalyzeActivity by name.
+// activity receiver so the workflow can call the engine activities by name.
 type Analyzer struct {
 	docker      *client.Client
 	vaultVolume string
 	workerImage string
+	identImage  string
 	brokerImage string
 	workerWall  time.Duration
+	identWall   time.Duration
 	brokerWall  time.Duration
 }
 
@@ -53,7 +56,20 @@ type brokerReport struct {
 	Incomplete bool            `json:"incomplete"`
 }
 
+// StaticAnalyzeActivity runs the yara engine over the artifact, jailed.
 func (a *Analyzer) StaticAnalyzeActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
+	return a.runEngine(ctx, a.workerImage, a.workerWall, in)
+}
+
+// IdentifyActivity runs magika over the artifact, jailed. identification is
+// evidence like any other engine output; it crosses the same broker.
+func (a *Analyzer) IdentifyActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
+	return a.runEngine(ctx, a.identImage, a.identWall, in)
+}
+
+// runEngine is the one enforcement path every engine goes through:
+// jailed scan, jailed broker, strict decode of validated bytes only.
+func (a *Analyzer) runEngine(ctx context.Context, image string, wall time.Duration, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
 	logger := activity.GetLogger(ctx)
 	var none pipeline.EngineReport
 
@@ -64,9 +80,9 @@ func (a *Analyzer) StaticAnalyzeActivity(ctx context.Context, in pipeline.Submis
 
 	// 1) the jailed scan. hostile bytes are parsed only in there.
 	scan, err := runJailed(ctx, a.docker, jailSpec{
-		image:        a.workerImage,
+		image:        image,
 		mounts:       []mount.Mount{sampleMount(a.vaultVolume, in.SHA256)},
-		wallClock:    a.workerWall,
+		wallClock:    wall,
 		submissionID: in.SubmissionID,
 	})
 	if err != nil {
@@ -139,7 +155,9 @@ func (a *Analyzer) StaticAnalyzeActivity(ctx context.Context, in pipeline.Submis
 		})
 	}
 
-	logger.Info("static analysis complete",
+	logger.Info("engine analysis complete",
+		"engine", rep.Engine,
+		"image", image,
 		"submission", in.SubmissionID,
 		"sha256", in.SHA256,
 		"verdict", rep.Verdict.String(),

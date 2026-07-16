@@ -114,6 +114,7 @@ services:
       TEMPORAL_NAMESPACE: openmallab
       MAL_VAULT_VOLUME: openmallab-vault
       MAL_WORKER_IMAGE: openmallab/mal-static-yara:m0
+      MAL_IDENT_IMAGE: openmallab/mal-ident:m0
       MAL_BROKER_IMAGE: openmallab/mal-broker:m0
     volumes:
       # the engine socket is the spawn authority in phase 1: the orchestrator
@@ -144,6 +145,13 @@ services:
       context: ..
       dockerfile: services/mal-static-yara/Dockerfile
     image: openmallab/mal-static-yara:m0
+
+  mal-ident:
+    profiles: [build]
+    build:
+      context: ..
+      dockerfile: services/mal-ident/Dockerfile
+    image: openmallab/mal-ident:m0
 
   mal-broker:
     profiles: [build]

@@ -9,12 +9,12 @@ import (
 )
 
 // SubmissionWorkflow is the durable root of every analysis. M0 spine: run the
-// static engine in its jail, validate through the broker, roll up a
-// fail-closed verdict. extraction, more static engines, and (later)
-// detonation hang off this as the pipeline grows.
+// engines in their jails in parallel, validate everything through the broker,
+// join on the fail-closed lattice. extraction, more static engines, and
+// (later) detonation hang off this same join as the pipeline grows.
 func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipeline.SubmissionResult, error) {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		// generous: covers three jail runs plus retries on infra hiccups.
+		// generous: covers the jail runs plus retries on infra hiccups.
 		StartToCloseTimeout: 3 * time.Minute,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	})
@@ -28,28 +28,46 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 		Verdict:      pipeline.Unknown,
 	}
 
-	var a *Analyzer // nil receiver: activity resolution by name only
-	var rep pipeline.EngineReport
-	if err := workflow.ExecuteActivity(ctx, a.StaticAnalyzeActivity, in).Get(ctx, &rep); err != nil {
-		// a jail failure, broker reject, timeout, or crash floors the node to
-		// SUSPICIOUS and flags it incomplete. it never falls through to BENIGN.
-		res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
-		res.Incomplete = true
-		res.Findings = append(res.Findings, pipeline.Finding{
-			Engine:  "mal-static-yara",
-			Type:    "error",
-			Detail:  "static analysis did not complete; verdict floored",
-			Verdict: pipeline.Suspicious,
-		})
-		return res, nil
+	// join folds one engine's outcome into the result: findings appended,
+	// verdicts joined on the lattice, and any failure or gap floors the node
+	// to SUSPICIOUS and marks it incomplete. it never falls through to BENIGN.
+	join := func(engine string, f workflow.Future) pipeline.EngineReport {
+		var rep pipeline.EngineReport
+		if err := f.Get(ctx, &rep); err != nil {
+			res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
+			res.Incomplete = true
+			res.Findings = append(res.Findings, pipeline.Finding{
+				Engine:  engine,
+				Type:    "error",
+				Detail:  "engine did not complete; verdict floored",
+				Verdict: pipeline.Suspicious,
+			})
+			return pipeline.EngineReport{}
+		}
+		res.Findings = append(res.Findings, rep.Findings...)
+		res.Verdict = pipeline.Max(res.Verdict, rep.Verdict)
+		if rep.Incomplete {
+			res.Incomplete = true
+			res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
+		}
+		return rep
 	}
 
-	// the lattice join: the most suspicious signal wins, benign masks nothing.
-	res.Findings = append(res.Findings, rep.Findings...)
-	res.Verdict = pipeline.Max(res.Verdict, rep.Verdict)
-	if rep.Incomplete {
-		res.Incomplete = true
-		res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
+	// both engines start before either result is awaited: they run in
+	// parallel, each in its own jail.
+	var a *Analyzer // nil receiver: activity resolution by name only
+	identF := workflow.ExecuteActivity(ctx, a.IdentifyActivity, in)
+	staticF := workflow.ExecuteActivity(ctx, a.StaticAnalyzeActivity, in)
+
+	identRep := join("mal-ident", identF)
+	join("mal-static-yara", staticF)
+
+	// identification is evidence: surface what the file really is.
+	for _, f := range identRep.Findings {
+		if f.Type == "file-type" {
+			res.FileType = f.Detail
+			break
+		}
 	}
 	return res, nil
 }

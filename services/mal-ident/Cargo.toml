@@ -5,3 +5,20 @@ edition = "2021"
 publish = false
 
 [dependencies]
+magika = "1.1.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+
+# ort provides the onnx runtime magika runs on. We split it by platform on
+# purpose. On linux (the container target) we dlopen a vendored shared runtime
+# (load-dynamic): ort's prebuilt STATIC runtime references toolchain symbols
+# (a libstdc++ exception helper, and newer-glibc isoc23 variants) that a
+# stable glibc build image cannot resolve at link time, so we instead load
+# Microsoft's official self-contained libonnxruntime.so at run time, pinned by
+# version and sha in the Dockerfile. On macOS the static link works out of the
+# box, so local dev stays zero-setup. Same pinned runtime version either way.
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic", "ndarray", "api-24"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+ort = "=2.0.0-rc.12"

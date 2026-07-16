@@ -69,8 +69,10 @@ func main() {
 		docker:      docker,
 		vaultVolume: envOr("MAL_VAULT_VOLUME", "openmallab-vault"),
 		workerImage: envOr("MAL_WORKER_IMAGE", "openmallab/mal-static-yara:m0"),
+		identImage:  envOr("MAL_IDENT_IMAGE", "openmallab/mal-ident:m0"),
 		brokerImage: envOr("MAL_BROKER_IMAGE", "openmallab/mal-broker:m0"),
 		workerWall:  envDurOr("MAL_WORKER_WALL_CLOCK", 60*time.Second),
+		identWall:   envDurOr("MAL_IDENT_WALL_CLOCK", 30*time.Second),
 		brokerWall:  envDurOr("MAL_BROKER_WALL_CLOCK", 30*time.Second),
 	}
 
@@ -81,8 +83,8 @@ func main() {
 	w.RegisterWorkflow(SubmissionWorkflow)
 	w.RegisterActivity(a)
 
-	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault-volume=%s worker=%s broker=%s)",
-		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.brokerImage)
+	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault-volume=%s yara=%s ident=%s broker=%s)",
+		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.brokerImage)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker stopped: %v", err)
 	}
