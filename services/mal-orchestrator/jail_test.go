@@ -107,12 +107,12 @@ func TestShaValidationIsStrict(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"", "short",
-		strings.Repeat("A", 64),           // uppercase
-		strings.Repeat("a", 63),           // short
-		strings.Repeat("a", 65),           // long
-		strings.Repeat("a", 63) + "/",     // path metachar
-		"../" + strings.Repeat("a", 61),   // traversal
-		strings.Repeat("a", 63) + "\x00",  // nul
+		strings.Repeat("A", 64),          // uppercase
+		strings.Repeat("a", 63),          // short
+		strings.Repeat("a", 65),          // long
+		strings.Repeat("a", 63) + "/",    // path metachar
+		"../" + strings.Repeat("a", 61),  // traversal
+		strings.Repeat("a", 63) + "\x00", // nul
 	} {
 		if shaHex.MatchString(bad) {
 			t.Fatalf("accepted bad sha %q", bad)

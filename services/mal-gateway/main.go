@@ -42,8 +42,8 @@ func newID() string {
 }
 
 type server struct {
-	tc     client.Client
-	vault  string // scratch vault dir (the real envelope-encrypted WORM vault comes next)
+	tc    client.Client
+	vault string // scratch vault dir (the real envelope-encrypted WORM vault comes next)
 }
 
 func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {

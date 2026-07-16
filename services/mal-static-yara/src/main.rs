@@ -53,7 +53,9 @@ fn rank(v: &str) -> i32 {
 }
 
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "/in/sample".to_string());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/in/sample".to_string());
 
     let rules = match yara_x::compile(RULES) {
         Ok(r) => r,
@@ -126,8 +128,7 @@ mod tests {
     fn eicar() -> Vec<u8> {
         format!(
             "{}{}",
-            "X5O!P%@AP[4\\PZX54(P^)7CC)7}$",
-            "EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+            "X5O!P%@AP[4\\PZX54(P^)7CC)7}$", "EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
         )
         .into_bytes()
     }

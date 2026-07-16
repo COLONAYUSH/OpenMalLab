@@ -1,7 +1,7 @@
-# CI skeleton for OpenMalLab. These jobs pin the gates we care about; the real
-# build steps get filled in as each service lands. Dependency resolution goes
-# through the project's configured registries (set them as repo variables, for
-# example an Artifactory GOPROXY, Cargo registry, npm registry, and PyPI index).
+# CI for OpenMalLab. Every job here gates something we actually claim:
+# the lattice laws, the broker's caps, the jail recipe, and the images
+# themselves. Dependency resolution uses the public registries; corporate
+# and air-gapped forks point these at their own mirrors.
 name: ci
 
 on:
@@ -10,12 +10,69 @@ on:
   pull_request:
 
 jobs:
-  lint-and-test:
+  go:
+    # build, vet, format, and the unit gates: the 4x4 verdict-lattice proof,
+    # the broker validate contract, and the jail-recipe conformance test that
+    # pins the spawner to the boundary proof.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: placeholder
-        run: echo "per-service lint and test get wired in as services land"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: format
+        run: test -z "$(gofmt -l .)"
+      - name: vet
+        run: go vet ./...
+      - name: build
+        run: go build ./...
+      - name: test
+        run: go test ./...
+
+  fuzz:
+    # continuous fuzzing of the trust boundary. the broker is the one decoder
+    # of hostile-derived bytes; it gets hammered on every push.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: fuzz the broker decode
+        run: go test -fuzz=FuzzValidate -fuzztime=60s ./services/mal-broker/
+
+  rust:
+    # the workers that parse hostile bytes: build and test the workspace.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: rustup update stable && rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: format
+        run: cargo fmt --check
+      - name: test
+        run: cargo test --workspace --locked
+
+  boundary-proof:
+    # the topology-conformance gate: build the real images and run the real
+    # jail. asserts no network, no caps, no creds, read-only rootfs, noexec
+    # scratch, non-root, resource caps, and the broker's reject paths, from
+    # the daemon's records and from inside the jail. see
+    # docs/BOUNDARY-PROOF.md for what this means and why it exists.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the images
+        run: docker compose -f deploy/compose.yaml --profile build build
+      - name: prove the boundary
+        run: deploy/proof/boundary-proof.sh
 
   license-gate:
     # Bidirectional and transitive. Fails on copyleft entering the Apache core,
@@ -25,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: placeholder
-        run: echo "license gate gets wired in with the first real dependency"
+        run: echo "license gate gets wired in with the first real dependency review"
 
   invariant-traceability:
     # Fails the build if any invariant or residual lacks a linked test id.
@@ -34,13 +91,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: placeholder
-        run: echo "traceability gate gets wired in with the first invariant test"
-
-  fuzz:
-    # Continuous fuzzing of the hostile-input parsers: mal-extract, mal-ident,
-    # and the analyze-result broker.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: placeholder
-        run: echo "fuzz targets get wired in with mal-extract"
+        run: echo "traceability gate gets wired in as the invariant register lands"
