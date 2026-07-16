@@ -1,0 +1,3 @@
+# Intentionally empty. Drop vetted third-party YARA packs here for an offline
+# build; see ../README.md. Third-party rule content is not vendored into the
+# core repo because of its licensing.

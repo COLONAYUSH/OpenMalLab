@@ -8,3 +8,7 @@ publish = false
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 yara-x = "1.19.0"
+# embeds the whole rules/ tree into the binary at compile time, so the image
+# digest pins the exact rule set. one bad community rule file is skipped, not
+# fatal, so operators can drop packs into rules/ without breaking the build.
+include_dir = "0.7.4"
