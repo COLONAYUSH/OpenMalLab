@@ -52,11 +52,12 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 			res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
 			res.Incomplete = true
 			res.Findings = append(res.Findings, pipeline.Finding{
-				Engine:  engine,
-				Type:    "error",
-				Detail:  "engine did not complete; verdict floored",
-				Verdict: pipeline.Suspicious,
-				Path:    path,
+				Engine:     engine,
+				Type:       "error",
+				Detail:     "engine did not complete; verdict floored",
+				Verdict:    pipeline.Suspicious,
+				Confidence: pipeline.ConfLow, // a floor, not a detection
+				Path:       path,
 			})
 			return pipeline.EngineReport{}, false
 		}
@@ -80,10 +81,11 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 			// bounded on purpose: report the truncation, do not silently stop.
 			res.Incomplete = true
 			res.Findings = append(res.Findings, pipeline.Finding{
-				Engine:  "mal-orchestrator",
-				Type:    "recursion-cap",
-				Detail:  "artifact-count cap reached; deeper children not analyzed",
-				Verdict: pipeline.Suspicious,
+				Engine:     "mal-orchestrator",
+				Type:       "recursion-cap",
+				Detail:     "artifact-count cap reached; deeper children not analyzed",
+				Verdict:    pipeline.Suspicious,
+				Confidence: pipeline.ConfLow,
 			})
 			res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
 			break
@@ -125,6 +127,11 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 			}
 		}
 	}
+
+	// the triage axis: turn the findings into a ranked, confidence-weighted
+	// score. the severity verdict above is untouched (fail-closed); this only
+	// tells a queue how much to care.
+	res.Score, res.Confidence = pipeline.ScoreFindings(res.Findings)
 	return res, nil
 }
 

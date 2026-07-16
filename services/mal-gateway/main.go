@@ -122,6 +122,8 @@ func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 		"sha256":        res.SHA256,
 		"file_type":     res.FileType,
 		"verdict":       res.Verdict.String(),
+		"score":         res.Score,
+		"confidence":    res.Confidence.String(),
 		"incomplete":    res.Incomplete,
 		"findings":      res.Findings,
 	})

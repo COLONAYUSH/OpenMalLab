@@ -159,10 +159,11 @@ func (a *Analyzer) ExtractActivity(ctx context.Context, in pipeline.SubmissionIn
 			logger.Warn("dropping an unverifiable extracted child",
 				"submission", in.SubmissionID, "claimed", c.SHA256, "err", err.Error())
 			rep.Findings = append(rep.Findings, pipeline.Finding{
-				Engine:  "mal-extract",
-				Type:    "ingest-rejected",
-				Detail:  "an extracted child failed re-hash and was dropped",
-				Verdict: pipeline.Suspicious,
+				Engine:     "mal-extract",
+				Type:       "ingest-rejected",
+				Detail:     "an extracted child failed re-hash and was dropped",
+				Verdict:    pipeline.Suspicious,
+				Confidence: pipeline.ConfLow,
 			})
 			rep.Verdict = pipeline.Max(rep.Verdict, pipeline.Suspicious)
 			continue
@@ -341,11 +342,12 @@ func mapReport(br *brokerReport) pipeline.EngineReport {
 			rep.Incomplete = true
 		}
 		rep.Findings = append(rep.Findings, pipeline.Finding{
-			Engine:  f.Engine,
-			Type:    f.Type,
-			Detail:  f.Detail,
-			Attck:   f.Attck,
-			Verdict: fv,
+			Engine:     f.Engine,
+			Type:       f.Type,
+			Detail:     f.Detail,
+			Attck:      f.Attck,
+			Verdict:    fv,
+			Confidence: pipeline.ConfidenceFor(f.Engine, f.Type, fv),
 		})
 	}
 	return rep
