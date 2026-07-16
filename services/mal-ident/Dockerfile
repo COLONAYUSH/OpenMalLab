@@ -46,8 +46,11 @@ COPY services/mal-ident/ services/mal-ident/
 COPY services/mal-extract/ services/mal-extract/
 COPY services/mal-static-yara/ services/mal-static-yara/
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+# sharing=locked: several rust images build concurrently under one `compose
+# build` and share these caches; locked serializes access so they cannot race
+# unpacking the same crate (the .cargo-ok "File exists" failure).
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
     cargo build -p mal-ident --release --locked \
     && cp target/release/mal-ident /mal-ident
 

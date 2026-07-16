@@ -29,8 +29,11 @@ COPY services/mal-static-yara/ services/mal-static-yara/
 # Static build. Explicit --target (host triple) keeps crt-static off proc-macro
 # and build-script units. Arch-neutral so it builds on arm64 and amd64.
 ENV RUSTFLAGS="-C target-feature=+crt-static"
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+# sharing=locked: several rust images build concurrently under one `compose
+# build` and share these caches; locked serializes access so they cannot race
+# unpacking the same crate (the .cargo-ok "File exists" failure).
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
     TARGET="$(rustc -vV | sed -n 's/host: //p')" \
     && cargo build -p mal-extract --release --locked --target "$TARGET" \
     && cp "target/$TARGET/release/mal-extract" /mal-extract
