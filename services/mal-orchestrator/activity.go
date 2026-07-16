@@ -9,9 +9,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"regexp"
+	"io"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
@@ -19,28 +24,43 @@ import (
 	"github.com/docker/docker/client"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
+	"regexp"
 )
+
+// maxIngestBytes bounds a single extracted child the orchestrator will pull
+// into the vault. the extractor already caps entries, but the orchestrator
+// trusts nothing the worker did; this is its own limit.
+const maxIngestBytes = 128 << 20
+
+// nobodyUID is the unprivileged uid every jailed worker runs as; the per-run
+// staging dir is owned by it so the extractor can write its children.
+const nobodyUID = 65534
 
 // Analyzer owns the docker handle and the jail parameters. registered as the
 // activity receiver so the workflow can call the engine activities by name.
 type Analyzer struct {
-	docker      *client.Client
-	vaultVolume string
-	workerImage string
-	identImage  string
-	brokerImage string
-	workerWall  time.Duration
-	identWall   time.Duration
-	brokerWall  time.Duration
+	docker       *client.Client
+	vaultVolume  string // volume name, mounted into workers by sha subpath
+	vaultPath    string // the same vault, mounted in THIS process, for ingest writes
+	stagingPath  string // extract-staging volume, mounted in this process
+	stagingVol   string // extract-staging volume name, for the extractor's /out
+	workerImage  string
+	identImage   string
+	extractImage string
+	brokerImage  string
+	workerWall   time.Duration
+	identWall    time.Duration
+	extractWall  time.Duration
+	brokerWall   time.Duration
 }
 
 // the sha is about to be spliced into an engine api mount spec; it gets
 // validated even though we computed it ourselves. defense costs one regexp.
 var shaHex = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
-// brokerFinding and brokerReport mirror the broker's validated wire shape.
-// they exist so the orchestrator's strict decode is of the broker's contract,
-// not of anything a worker invents.
+// brokerFinding, brokerChild, brokerReport mirror the broker's validated wire
+// shape. the orchestrator's strict decode is of the broker's contract, never
+// of anything a worker invents.
 type brokerFinding struct {
 	Engine  string `json:"engine"`
 	Type    string `json:"type"`
@@ -49,27 +69,48 @@ type brokerFinding struct {
 	Verdict string `json:"verdict"`
 }
 
+type brokerChild struct {
+	SHA256 string `json:"sha256"`
+	Size   uint64 `json:"size"`
+	Name   string `json:"name"`
+}
+
 type brokerReport struct {
 	Engine     string          `json:"engine"`
 	Findings   []brokerFinding `json:"findings"`
+	Children   []brokerChild   `json:"children"`
 	Verdict    string          `json:"verdict"`
 	Incomplete bool            `json:"incomplete"`
 }
 
 // StaticAnalyzeActivity runs the yara engine over the artifact, jailed.
 func (a *Analyzer) StaticAnalyzeActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
-	return a.runEngine(ctx, a.workerImage, a.workerWall, in)
+	br, err := a.runWorkerThroughBroker(ctx, a.workerImage, a.workerWall, in,
+		[]mount.Mount{sampleMount(a.vaultVolume, in.SHA256)})
+	if err != nil {
+		return pipeline.EngineReport{}, err
+	}
+	return mapReport(br), nil
 }
 
 // IdentifyActivity runs magika over the artifact, jailed. identification is
 // evidence like any other engine output; it crosses the same broker.
 func (a *Analyzer) IdentifyActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
-	return a.runEngine(ctx, a.identImage, a.identWall, in)
+	br, err := a.runWorkerThroughBroker(ctx, a.identImage, a.identWall, in,
+		[]mount.Mount{sampleMount(a.vaultVolume, in.SHA256)})
+	if err != nil {
+		return pipeline.EngineReport{}, err
+	}
+	return mapReport(br), nil
 }
 
-// runEngine is the one enforcement path every engine goes through:
-// jailed scan, jailed broker, strict decode of validated bytes only.
-func (a *Analyzer) runEngine(ctx context.Context, image string, wall time.Duration, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
+// ExtractActivity unpacks one level of a container. it is the only activity
+// that grants the worker a writable mount (/out, a per-run staging subpath),
+// and the only one that ingests: it reads the children the extractor staged,
+// RE-HASHES each one (never trusting the worker's claimed hash or name), and
+// content-addresses the verified bytes into the vault. children that fail to
+// re-hash are dropped and the node is marked incomplete.
+func (a *Analyzer) ExtractActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
 	logger := activity.GetLogger(ctx)
 	var none pipeline.EngineReport
 
@@ -78,15 +119,166 @@ func (a *Analyzer) runEngine(ctx context.Context, image string, wall time.Durati
 			"submission sha256 is not 64 lowercase hex chars", "BadInput", nil)
 	}
 
-	// 1) the jailed scan. hostile bytes are parsed only in there.
+	// a fresh, unique output area for this run. hex only, so it is always a
+	// safe path segment.
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return none, fmt.Errorf("nonce: %w", err)
+	}
+	runID := hex.EncodeToString(nonce)
+	stageDir := filepath.Join(a.stagingPath, runID)
+	if err := os.MkdirAll(stageDir, 0o700); err != nil {
+		return none, fmt.Errorf("staging dir: %w", err)
+	}
+	// arm cleanup the instant the dir exists, so every later return still
+	// removes it (a leak here is what a crash-time sweep also guards).
+	defer os.RemoveAll(stageDir)
+	// the extractor runs as nobody and writes its children here, so the per-run
+	// dir must be owned by nobody. it is a fresh, unique, empty dir.
+	if err := os.Chown(stageDir, nobodyUID, nobodyUID); err != nil {
+		return none, fmt.Errorf("staging chown: %w", err)
+	}
+
+	br, err := a.runWorkerThroughBroker(ctx, a.extractImage, a.extractWall, in,
+		[]mount.Mount{
+			sampleMount(a.vaultVolume, in.SHA256),
+			outMount(a.stagingVol, runID),
+		})
+	if err != nil {
+		return none, err
+	}
+	rep := mapReport(br)
+
+	// ingest: re-hash every staged child and content-address it into the vault.
+	// the manifest's sha is a claim; the bytes are the truth.
+	var verified []pipeline.Child
+	for _, c := range br.Children {
+		size, err := a.ingestChild(stageDir, c.SHA256)
+		if err != nil {
+			rep.Incomplete = true
+			logger.Warn("dropping an unverifiable extracted child",
+				"submission", in.SubmissionID, "claimed", c.SHA256, "err", err.Error())
+			rep.Findings = append(rep.Findings, pipeline.Finding{
+				Engine:  "mal-extract",
+				Type:    "ingest-rejected",
+				Detail:  "an extracted child failed re-hash and was dropped",
+				Verdict: pipeline.Suspicious,
+			})
+			rep.Verdict = pipeline.Max(rep.Verdict, pipeline.Suspicious)
+			continue
+		}
+		verified = append(verified, pipeline.Child{SHA256: c.SHA256, Size: size, Name: c.Name})
+	}
+	rep.Children = verified
+
+	logger.Info("extraction complete",
+		"submission", in.SubmissionID, "sha256", in.SHA256,
+		"children", len(rep.Children), "verdict", rep.Verdict.String(), "incomplete", rep.Incomplete)
+	return rep, nil
+}
+
+// sweepStaging clears leftover per-run staging dirs at boot. per-run dirs are
+// always removed after their extraction; anything here after a restart is
+// crash debris, the staging analogue of reapLeakedJails.
+func (a *Analyzer) sweepStaging() int {
+	entries, err := os.ReadDir(a.stagingPath)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if os.RemoveAll(filepath.Join(a.stagingPath, e.Name())) == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// ingestChild copies one staged child into the vault, streaming through a
+// hasher, and only accepts it if the recomputed sha256 matches the name the
+// extractor gave the file. this is what lets the orchestrator distrust the
+// worker completely: a compromised extractor cannot smuggle bytes under a hash
+// they do not match, and the vault is only ever keyed by a hash we computed.
+func (a *Analyzer) ingestChild(stageDir, claimedSHA string) (uint64, error) {
+	if !shaHex.MatchString(claimedSHA) {
+		return 0, fmt.Errorf("child sha not hex")
+	}
+	src := filepath.Join(stageDir, claimedSHA)
+	info, err := os.Stat(src)
+	if err != nil {
+		return 0, fmt.Errorf("stat child: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("child is not a regular file")
+	}
+	if info.Size() > maxIngestBytes {
+		return 0, fmt.Errorf("child exceeds ingest cap")
+	}
+
+	f, err := os.Open(src)
+	if err != nil {
+		return 0, fmt.Errorf("open child: %w", err)
+	}
+	defer f.Close()
+
+	tmp, err := os.CreateTemp(a.vaultPath, ".ingest-*")
+	if err != nil {
+		return 0, fmt.Errorf("vault temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(f, maxIngestBytes+1))
+	tmp.Close()
+	if err != nil || n > maxIngestBytes {
+		os.Remove(tmpName)
+		return 0, fmt.Errorf("copy child: %w", err)
+	}
+	sum := hex.EncodeToString(h.Sum(nil))
+	if sum != claimedSHA {
+		// the bytes do not match the name the worker gave them: corruption or a
+		// lie. either way we refuse it.
+		os.Remove(tmpName)
+		return 0, fmt.Errorf("child hash mismatch: named %s, is %s", claimedSHA, sum)
+	}
+	dst := filepath.Join(a.vaultPath, sum)
+	if _, err := os.Stat(dst); err == nil {
+		// already in the vault (dedup across submissions); drop the temp.
+		os.Remove(tmpName)
+		return uint64(n), nil
+	}
+	// own it as nobody, 0600: the orchestrator writes as root, but the jailed
+	// workers that will analyze this child read it as nobody via subpath, so it
+	// must be readable by that uid, exactly like a gateway-seeded upload.
+	_ = os.Chown(tmpName, nobodyUID, nobodyUID)
+	_ = os.Chmod(tmpName, 0o600)
+	if err := os.Rename(tmpName, dst); err != nil {
+		os.Remove(tmpName)
+		return 0, fmt.Errorf("vault rename: %w", err)
+	}
+	return uint64(n), nil
+}
+
+// runWorkerThroughBroker is the one enforcement path every engine goes through:
+// jailed worker with the given mounts, its raw stdout piped into a jailed
+// broker, then a strict decode of the broker's validated bytes. it returns the
+// broker's report; callers map it onto the pipeline types.
+func (a *Analyzer) runWorkerThroughBroker(ctx context.Context, image string, wall time.Duration, in pipeline.SubmissionInput, mounts []mount.Mount) (*brokerReport, error) {
+	logger := activity.GetLogger(ctx)
+
+	if !shaHex.MatchString(in.SHA256) {
+		return nil, temporal.NewNonRetryableApplicationError(
+			"submission sha256 is not 64 lowercase hex chars", "BadInput", nil)
+	}
+
+	// 1) the jailed worker. hostile bytes are parsed only in there.
 	scan, err := runJailed(ctx, a.docker, jailSpec{
 		image:        image,
-		mounts:       []mount.Mount{sampleMount(a.vaultVolume, in.SHA256)},
+		mounts:       mounts,
 		wallClock:    wall,
 		submissionID: in.SubmissionID,
 	})
 	if err != nil {
-		return none, fmt.Errorf("worker jail: %w", err)
+		return nil, fmt.Errorf("worker jail: %w", err)
 	}
 	if len(scan.stderr) > 0 {
 		logger.Warn("worker stderr (sanitized)",
@@ -95,11 +287,10 @@ func (a *Analyzer) runEngine(ctx context.Context, image string, wall time.Durati
 			"preview", sanitizeForLog(scan.stderr, 200))
 	}
 	if scan.exitCode != 0 {
-		return none, fmt.Errorf("worker exited %d", scan.exitCode)
+		return nil, fmt.Errorf("worker exited %d", scan.exitCode)
 	}
 	if scan.stdoutTruncated {
-		// deterministic violation: a retry would produce the same flood.
-		return none, temporal.NewNonRetryableApplicationError(
+		return nil, temporal.NewNonRetryableApplicationError(
 			"worker output exceeded the 1MiB cap", "OversizeOutput", nil)
 	}
 
@@ -111,17 +302,15 @@ func (a *Analyzer) runEngine(ctx context.Context, image string, wall time.Durati
 		submissionID: in.SubmissionID,
 	})
 	if err != nil {
-		return none, fmt.Errorf("broker jail: %w", err)
+		return nil, fmt.Errorf("broker jail: %w", err)
 	}
 	if brok.exitCode != 0 {
-		// the broker said no. deterministic; retrying cannot make hostile
-		// output valid. the workflow floors this node to SUSPICIOUS.
-		return none, temporal.NewNonRetryableApplicationError(
+		return nil, temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("broker rejected worker output: %s", sanitizeForLog(brok.stderr, 200)),
 			"BrokerReject", nil)
 	}
 	if brok.stdoutTruncated {
-		return none, temporal.NewNonRetryableApplicationError(
+		return nil, temporal.NewNonRetryableApplicationError(
 			"broker output exceeded the 1MiB cap", "OversizeOutput", nil)
 	}
 
@@ -130,11 +319,16 @@ func (a *Analyzer) runEngine(ctx context.Context, image string, wall time.Durati
 	dec.DisallowUnknownFields()
 	var br brokerReport
 	if err := dec.Decode(&br); err != nil {
-		return none, temporal.NewNonRetryableApplicationError(
+		return nil, temporal.NewNonRetryableApplicationError(
 			"broker output failed strict decode: "+err.Error(), "BrokerContract", nil)
 	}
+	return &br, nil
+}
 
-	// 4) map onto the typed lattice; anything unparseable fails closed.
+// mapReport turns the broker's validated report onto the typed lattice.
+// anything unparseable fails closed (incomplete, never a milder verdict).
+// children are handled by the caller after re-hashing, not here.
+func mapReport(br *brokerReport) pipeline.EngineReport {
 	rep := pipeline.EngineReport{Engine: br.Engine, Incomplete: br.Incomplete}
 	v, ok := pipeline.ParseVerdict(br.Verdict)
 	if !ok {
@@ -154,14 +348,5 @@ func (a *Analyzer) runEngine(ctx context.Context, image string, wall time.Durati
 			Verdict: fv,
 		})
 	}
-
-	logger.Info("engine analysis complete",
-		"engine", rep.Engine,
-		"image", image,
-		"submission", in.SubmissionID,
-		"sha256", in.SHA256,
-		"verdict", rep.Verdict.String(),
-		"findings", len(rep.Findings),
-		"incomplete", rep.Incomplete)
-	return rep, nil
+	return rep
 }

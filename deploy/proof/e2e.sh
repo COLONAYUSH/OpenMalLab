@@ -64,6 +64,16 @@ trap 'rm -rf "$TMP"; if [ "${KEEP_UP:-0}" != "1" ]; then docker compose -f "$COM
 # contiguous signature never sits in this file.
 printf '%s%s' 'X5O!P%@AP[4\PZX54(P^)7CC)7}$' 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > "$TMP/eicar.com"
 printf 'a plain text file with nothing interesting in it\n' > "$TMP/benign.txt"
+# a zip that hides eicar two levels down a directory, to prove recursive
+# extraction: the gateway never sees the eicar bytes, only a zip.
+python3 - "$TMP/eicar.com" "$TMP/nested.zip" <<'PY'
+import zipfile, sys
+with open(sys.argv[1], 'rb') as f:
+    eicar = f.read()
+with zipfile.ZipFile(sys.argv[2], 'w', zipfile.ZIP_DEFLATED) as z:
+    z.writestr('payloads/inner/eicar.com', eicar)
+    z.writestr('readme.txt', b'nothing to see here')
+PY
 
 say "submitting eicar"
 ID=$(submit "$TMP/eicar.com")
@@ -101,7 +111,28 @@ FT2=$(echo "$BODY2" | jget file_type)
 [ -n "$FT2" ] || fail "benign carries no file_type: $BODY2"
 say "benign -> UNKNOWN, complete, identified as '$FT2'. nothing is benign by omission."
 
+say "submitting a zip that hides eicar two directories deep"
+ID3=$(submit "$TMP/nested.zip")
+BODY3=$(await_verdict "$ID3")
+V3=$(echo "$BODY3" | jget verdict)
+[ "$V3" = "MALICIOUS" ] || fail "nested-zip verdict $V3, want MALICIOUS (eicar is inside): $BODY3"
+echo "$BODY3" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+# the root was identified as a zip.
+assert d["file_type"] in ("zip",), "root not identified as zip: %s" % d["file_type"]
+# recursion found the eicar child and yara hit it, with a breadcrumb path.
+hit = [x for x in d["findings"]
+       if x["engine"] == "mal-static-yara" and x["detail"] == "eicar_test_file"]
+assert hit, "no eicar finding from inside the zip: %s" % d["findings"]
+assert hit[0].get("path"), "eicar finding carries no breadcrumb path: %s" % hit[0]
+assert "eicar.com" in hit[0]["path"], "breadcrumb does not name the nested file: %s" % hit[0]["path"]
+print("  breadcrumb:", hit[0]["path"])
+' || fail "nested-zip recursion wrong: $BODY3"
+say "nested zip -> MALICIOUS: recursion unpacked it, scanned the child, kept the trail."
+
 echo ""
 echo "E2E PROOF PASSED"
-echo "  eicar:  $ID -> MALICIOUS (yara: eicar_test_file, T1204; magika: $FT)"
-echo "  benign: $ID2 -> UNKNOWN (magika: $FT2)"
+echo "  eicar:      $ID -> MALICIOUS (yara: eicar_test_file, T1204; magika: $FT)"
+echo "  benign:     $ID2 -> UNKNOWN (magika: $FT2)"
+echo "  nested zip: $ID3 -> MALICIOUS (recursive extract found the buried eicar)"

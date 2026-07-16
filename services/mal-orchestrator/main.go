@@ -59,21 +59,29 @@ func main() {
 		log.Fatalf("docker ping: %v (the orchestrator spawns jailed workers; it needs the engine socket)", err)
 	}
 
-	// crash hygiene: jails are single-use; anything labeled and still around
-	// from a previous life is garbage.
+	a := &Analyzer{
+		docker:       docker,
+		vaultVolume:  envOr("MAL_VAULT_VOLUME", "openmallab-vault"),
+		vaultPath:    envOr("MAL_VAULT_DIR", "/vault"),
+		stagingPath:  envOr("MAL_EXTRACT_STAGING_DIR", "/staging"),
+		stagingVol:   envOr("MAL_EXTRACT_STAGING_VOLUME", "openmallab-extract-staging"),
+		workerImage:  envOr("MAL_WORKER_IMAGE", "openmallab/mal-static-yara:m0"),
+		identImage:   envOr("MAL_IDENT_IMAGE", "openmallab/mal-ident:m0"),
+		extractImage: envOr("MAL_EXTRACT_IMAGE", "openmallab/mal-extract:m0"),
+		brokerImage:  envOr("MAL_BROKER_IMAGE", "openmallab/mal-broker:m0"),
+		workerWall:   envDurOr("MAL_WORKER_WALL_CLOCK", 60*time.Second),
+		identWall:    envDurOr("MAL_IDENT_WALL_CLOCK", 30*time.Second),
+		extractWall:  envDurOr("MAL_EXTRACT_WALL_CLOCK", 60*time.Second),
+		brokerWall:   envDurOr("MAL_BROKER_WALL_CLOCK", 30*time.Second),
+	}
+
+	// crash hygiene: jails are single-use and staging dirs are per-run; anything
+	// left from a previous life is garbage.
 	if n := reapLeakedJails(pingCtx, docker); n > 0 {
 		log.Printf("reaped %d leaked jailed containers", n)
 	}
-
-	a := &Analyzer{
-		docker:      docker,
-		vaultVolume: envOr("MAL_VAULT_VOLUME", "openmallab-vault"),
-		workerImage: envOr("MAL_WORKER_IMAGE", "openmallab/mal-static-yara:m0"),
-		identImage:  envOr("MAL_IDENT_IMAGE", "openmallab/mal-ident:m0"),
-		brokerImage: envOr("MAL_BROKER_IMAGE", "openmallab/mal-broker:m0"),
-		workerWall:  envDurOr("MAL_WORKER_WALL_CLOCK", 60*time.Second),
-		identWall:   envDurOr("MAL_IDENT_WALL_CLOCK", 30*time.Second),
-		brokerWall:  envDurOr("MAL_BROKER_WALL_CLOCK", 30*time.Second),
+	if n := a.sweepStaging(); n > 0 {
+		log.Printf("swept %d leftover staging dirs", n)
 	}
 
 	w := worker.New(tc, TaskQueue, worker.Options{
@@ -83,8 +91,8 @@ func main() {
 	w.RegisterWorkflow(SubmissionWorkflow)
 	w.RegisterActivity(a)
 
-	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault-volume=%s yara=%s ident=%s broker=%s)",
-		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.brokerImage)
+	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s broker=%s)",
+		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.extractImage, a.brokerImage)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker stopped: %v", err)
 	}

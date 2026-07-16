@@ -100,6 +100,49 @@ func TestSampleMountIsOneReadOnlyFile(t *testing.T) {
 	}
 }
 
+func TestOutMountIsTheOneWritableMount(t *testing.T) {
+	m := outMount("openmallab-extract-staging", "deadbeef")
+	if m.Type != mount.TypeVolume {
+		t.Fatalf("out mount type %q", m.Type)
+	}
+	if m.ReadOnly {
+		t.Fatal("out mount must be writable; it is where children are staged")
+	}
+	if m.Target != "/out" {
+		t.Fatalf("out target %q, want /out", m.Target)
+	}
+	if m.VolumeOptions == nil || m.VolumeOptions.Subpath != "deadbeef" {
+		t.Fatalf("out mount must be a per-run subpath: %+v", m.VolumeOptions)
+	}
+}
+
+// the extract jail differs from a scan only by adding /out; every other
+// hardening property is identical (the recipe is shared). this pins the two
+// mounts an extractor gets: the sample read-only, the output writable, nothing
+// else.
+func TestExtractJailIsAScanJailPlusOneWritableOut(t *testing.T) {
+	sample := sampleMount("openmallab-vault", strings.Repeat("a", 64))
+	out := outMount("openmallab-extract-staging", "runid")
+	mounts := []mount.Mount{sample, out}
+
+	writable := 0
+	for _, m := range mounts {
+		if !m.ReadOnly {
+			writable++
+			if m.Target != "/out" {
+				t.Fatalf("the only writable mount must be /out, got %q", m.Target)
+			}
+		}
+	}
+	if writable != 1 {
+		t.Fatalf("an extractor must have exactly one writable mount, got %d", writable)
+	}
+	// the hostconfig is the same locked-down recipe regardless of mounts.
+	if !jailedHostConfig().ReadonlyRootfs {
+		t.Fatal("extract jail must still have a read-only rootfs")
+	}
+}
+
 func TestShaValidationIsStrict(t *testing.T) {
 	good := strings.Repeat("0123456789abcdef", 4)
 	if !shaHex.MatchString(good) {

@@ -18,11 +18,14 @@ set -euo pipefail
 
 WORKER_IMAGE="${WORKER_IMAGE:-openmallab/mal-static-yara:m0}"
 IDENT_IMAGE="${IDENT_IMAGE:-openmallab/mal-ident:m0}"
+EXTRACT_IMAGE="${EXTRACT_IMAGE:-openmallab/mal-extract:m0}"
 BROKER_IMAGE="${BROKER_IMAGE:-openmallab/mal-broker:m0}"
 PROBE_IMAGE="${PROBE_IMAGE:-busybox:1.36}"
 
 VOL="openmallab-boundary-proof"
+OUTVOL="openmallab-boundary-out"
 WORKER="openmallab-boundary-worker"
+EXTRACTOR="openmallab-boundary-extractor"
 
 # The canonical EICAR test string, assembled at runtime from two halves so no
 # file in this repo carries the contiguous signature.
@@ -35,8 +38,8 @@ pass() { N=$((N + 1)); echo "PASS $N: $*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 cleanup() {
-  docker rm -f "$WORKER" >/dev/null 2>&1 || true
-  docker volume rm -f "$VOL" >/dev/null 2>&1 || true
+  docker rm -f "$WORKER" "$EXTRACTOR" >/dev/null 2>&1 || true
+  docker volume rm -f "$VOL" "$OUTVOL" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -63,6 +66,8 @@ docker image inspect "$WORKER_IMAGE" >/dev/null 2>&1 \
   || fail "worker image $WORKER_IMAGE not built; run: docker compose -f deploy/compose.yaml --profile build build"
 docker image inspect "$IDENT_IMAGE" >/dev/null 2>&1 \
   || fail "ident image $IDENT_IMAGE not built; run: docker compose -f deploy/compose.yaml --profile build build"
+docker image inspect "$EXTRACT_IMAGE" >/dev/null 2>&1 \
+  || fail "extract image $EXTRACT_IMAGE not built; run: docker compose -f deploy/compose.yaml --profile build build"
 docker image inspect "$BROKER_IMAGE" >/dev/null 2>&1 \
   || fail "broker image $BROKER_IMAGE not built; run: docker compose -f deploy/compose.yaml --profile build build"
 
@@ -189,6 +194,76 @@ if docker run --rm "${JAIL[@]}" --entrypoint /bin/sh "$IDENT_IMAGE" -c true >/de
   fail "ident image has a shell"
 fi
 pass "ident image has no shell despite its glibc closure: binary and runtime only"
+
+# ---- the extract engine: the same jail plus one writable /out ---------------
+# the extractor is the only worker granted a writable mount. prove that even
+# with /out it stays network-dead and cap-less, writes children ONLY under
+# /out (never the read-only rootfs or the read-only sample), and that a zip of
+# eicar yields a child the broker-validated manifest names.
+
+# build a zip containing eicar (assembled from halves so no contiguous
+# signature sits on disk in this repo). write it to a file, never a shell var,
+# since zip bytes contain NULs. stage it content-addressed in the vault, with
+# the hash computed in-container so this works on any host.
+ZIPF=$(mktemp)
+python3 - "$ZIPF" <<'PY'
+import zipfile, sys
+eicar = ('X5O!P%@AP[4\\PZX54(P^)7CC)7}$' + 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*').encode()
+with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED) as z:
+    z.writestr('nested/eicar.com', eicar)
+PY
+ZIP_SHA=$(docker run --rm -i -v "$VOL:/vault" "$PROBE_IMAGE" sh -c '
+  cat > /vault/.ztmp
+  sha=$(sha256sum /vault/.ztmp | cut -d" " -f1)
+  mv /vault/.ztmp /vault/$sha
+  chown 65534:65534 /vault/$sha && chmod 0600 /vault/$sha
+  echo $sha' < "$ZIPF")
+rm -f "$ZIPF"
+
+# a fresh, empty, nobody-owned output volume for the extractor's /out.
+docker volume create "$OUTVOL" >/dev/null
+docker run --rm -v "$OUTVOL:/out" "$PROBE_IMAGE" chown 65534:65534 /out
+
+EXTRACT_OUT=$(docker run --name "$EXTRACTOR" "${JAIL[@]}" \
+  --mount "type=volume,src=$VOL,dst=/in/sample,volume-subpath=$ZIP_SHA,ro" \
+  --mount "type=volume,src=$OUTVOL,dst=/out" \
+  "$EXTRACT_IMAGE" 2>/dev/null)
+echo "$EXTRACT_OUT" | grep -q '"engine":"mal-extract"' || fail "extractor produced no report: $EXTRACT_OUT"
+echo "$EXTRACT_OUT" | grep -q '"children"' || fail "extractor manifest has no children: $EXTRACT_OUT"
+pass "jailed extractor unpacked a zip with no network and emitted a manifest"
+
+# the child bytes must actually be staged under /out, addressed by hash.
+CHILD_SHA=$(echo "$EXTRACT_OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["children"][0]["sha256"])')
+echo "$CHILD_SHA" | grep -Eq '^[a-f0-9]{64}$' || fail "child sha malformed: $CHILD_SHA"
+docker run --rm -v "$OUTVOL:/out" "$PROBE_IMAGE" test -f "/out/$CHILD_SHA" \
+  || fail "extractor did not stage the child at /out/$CHILD_SHA"
+pass "extractor wrote the child content-addressed under /out, and nowhere else"
+
+expect2() { # label, inspect template, want (against the extractor container)
+  local got
+  got=$(docker inspect -f "$2" "$EXTRACTOR")
+  [ "$got" = "$3" ] || fail "$1: got '$got' want '$3'"
+  pass "$1"
+}
+expect2 "extract jail: network none"      '{{.HostConfig.NetworkMode}}'    'none'
+expect2 "extract jail: caps dropped"      '{{json .HostConfig.CapDrop}}'  '["ALL"]'
+expect2 "extract jail: read-only rootfs"  '{{.HostConfig.ReadonlyRootfs}}' 'true'
+expect2 "extract jail: runs as nobody"    '{{.Config.User}}'              '65534:65534'
+expect2 "extract jail: two mounts only"   '{{len .Mounts}}'               '2'
+
+# exactly one of the two mounts is writable, and it is /out.
+RW=$(docker inspect -f '{{range .Mounts}}{{if not .RW}}{{else}}{{.Destination}} {{end}}{{end}}' "$EXTRACTOR")
+[ "$RW" = "/out " ] || fail "the only writable mount must be /out, got '$RW'"
+pass "extract jail: the sample is read-only; only /out is writable"
+
+echo "$EXTRACT_OUT" | docker run --rm -i "${JAIL[@]}" "$BROKER_IMAGE" >/dev/null \
+  || fail "broker rejected the extract manifest"
+pass "jailed broker accepts the extract manifest: children validated"
+
+if docker run --rm "${JAIL[@]}" --entrypoint /bin/sh "$EXTRACT_IMAGE" -c true >/dev/null 2>&1; then
+  fail "extract image has a shell"
+fi
+pass "extract image has no shell: static binary on scratch"
 
 # ---- the broker gate, itself jailed -----------------------------------------
 

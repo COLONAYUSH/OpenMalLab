@@ -113,8 +113,12 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_NAMESPACE: openmallab
       MAL_VAULT_VOLUME: openmallab-vault
+      MAL_VAULT_DIR: /vault
+      MAL_EXTRACT_STAGING_DIR: /staging
+      MAL_EXTRACT_STAGING_VOLUME: openmallab-extract-staging
       MAL_WORKER_IMAGE: openmallab/mal-static-yara:m0
       MAL_IDENT_IMAGE: openmallab/mal-ident:m0
+      MAL_EXTRACT_IMAGE: openmallab/mal-extract:m0
       MAL_BROKER_IMAGE: openmallab/mal-broker:m0
     volumes:
       # the engine socket is the spawn authority in phase 1: the orchestrator
@@ -122,9 +126,14 @@ services:
       # socket, read-only and cap-dropped everywhere else. mediating this
       # behind a narrower spawner api is later-phase work.
       - /var/run/docker.sock:/var/run/docker.sock
-      # read-only view of the vault for existence checks; workers get their
-      # one file via volume-subpath, never through this mount.
-      - vault:/vault:ro
+      # the orchestrator is the persistence broker: it writes the vault (the
+      # gateway seeds uploads, the orchestrator ingests extracted children,
+      # both content-addressed). workers only ever read one file via subpath.
+      - vault:/vault
+      # extract staging: the extractor writes children into a per-run subpath
+      # here; the orchestrator reads them back, re-hashes, and ingests. shared
+      # only between the orchestrator and the extractor jails it spawns.
+      - extract_staging:/staging
     depends_on:
       temporal:
         condition: service_started
@@ -133,6 +142,12 @@ services:
     user: "0:0"
     read_only: true
     cap_drop: [ALL]
+    # the orchestrator is the persistence broker: it owns the vault and the
+    # extract staging area, so it needs to set file ownership (CHOWN) and read
+    # back children written by the unprivileged extractor (DAC_OVERRIDE). these
+    # two are trivial next to the docker socket it already holds, and the
+    # hostile-input workers it spawns still run with ALL caps dropped.
+    cap_add: [CHOWN, DAC_OVERRIDE]
     security_opt:
       - no-new-privileges
     restart: unless-stopped
@@ -153,6 +168,13 @@ services:
       dockerfile: services/mal-ident/Dockerfile
     image: openmallab/mal-ident:m0
 
+  mal-extract:
+    profiles: [build]
+    build:
+      context: ..
+      dockerfile: services/mal-extract/Dockerfile
+    image: openmallab/mal-extract:m0
+
   mal-broker:
     profiles: [build]
     build:
@@ -167,3 +189,7 @@ volumes:
     # fixed name: the orchestrator passes it to the engine api when mounting
     # a single content-addressed file into a worker via volume-subpath.
     name: openmallab-vault
+  extract_staging:
+    # fixed name: the orchestrator mounts per-run subpaths of this into the
+    # extractor as its writable /out, then reads the children back to ingest.
+    name: openmallab-extract-staging

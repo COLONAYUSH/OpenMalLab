@@ -86,6 +86,24 @@ func sampleMount(volume, sha string) mount.Mount {
 	}
 }
 
+// outMount grants an extractor its one writable output: a per-run subpath of
+// the shared extract-staging volume, mounted read-write at /out. it is the
+// only writable mount any worker ever gets, and only extractors get it. the
+// extractor writes content-addressed children here; the orchestrator reads
+// them back, re-hashes, and ingests. everything else about the jail is
+// identical to a scan.
+func outMount(volume, subpath string) mount.Mount {
+	return mount.Mount{
+		Type:     mount.TypeVolume,
+		Source:   volume,
+		Target:   "/out",
+		ReadOnly: false,
+		VolumeOptions: &mount.VolumeOptions{
+			Subpath: subpath,
+		},
+	}
+}
+
 // cappedBuffer keeps the first max bytes, flags anything beyond, and always
 // reports the full write so the stream drains instead of stalling the jail.
 type cappedBuffer struct {
