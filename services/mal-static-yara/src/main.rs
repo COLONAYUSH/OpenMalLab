@@ -116,3 +116,58 @@ fn emit(r: Report) {
     let _ = serde_json::to_writer(&mut out, &r);
     let _ = out.write_all(b"\n");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // assembled at runtime from two halves so the contiguous signature never
+    // sits in this source file (keeps desktop av off the repo's back).
+    fn eicar() -> Vec<u8> {
+        format!(
+            "{}{}",
+            "X5O!P%@AP[4\\PZX54(P^)7CC)7}$",
+            "EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+        )
+        .into_bytes()
+    }
+
+    fn scan(data: &[u8]) -> Vec<String> {
+        let rules = yara_x::compile(RULES).expect("baked rules must compile");
+        let mut scanner = yara_x::Scanner::new(&rules);
+        let results = scanner.scan(data).expect("scan");
+        results
+            .matching_rules()
+            .map(|r| r.identifier().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn eicar_matches_and_classifies_malicious() {
+        let hits = scan(&eicar());
+        assert_eq!(hits, vec!["eicar_test_file".to_string()]);
+        let (verdict, attck) = classify(&hits[0]);
+        assert_eq!(verdict, "MALICIOUS");
+        assert_eq!(attck, "T1204");
+    }
+
+    #[test]
+    fn benign_bytes_match_nothing() {
+        assert!(scan(b"just a text file, nothing to see").is_empty());
+        assert!(scan(b"").is_empty());
+    }
+
+    #[test]
+    fn unknown_rules_classify_fail_closed() {
+        // any rule we have no mapping for is SUSPICIOUS, never BENIGN.
+        let (verdict, _) = classify("some_future_rule");
+        assert_eq!(verdict, "SUSPICIOUS");
+    }
+
+    #[test]
+    fn rank_orders_the_lattice() {
+        assert!(rank("MALICIOUS") > rank("SUSPICIOUS"));
+        assert!(rank("SUSPICIOUS") > rank("UNKNOWN"));
+        assert!(rank("UNKNOWN") > rank("BENIGN"));
+    }
+}

@@ -1,0 +1,13 @@
+# Whitelist: image builds get source only. Keeps the context small and keeps
+# docs, git history, local binaries, and rendered diagrams out of every image.
+*
+!go.mod
+!go.sum
+!Cargo.toml
+!Cargo.lock
+!internal/
+!services/
+!proto/
+!deploy/certs/
+**/.DS_Store
+**/target/
