@@ -1,74 +1,55 @@
 package main
 
 import (
-	"context"
-	"os"
-	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
-	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
-// SubmissionWorkflow is the durable root of every analysis. M0 spine: identify
-// the file, then roll up a fail-closed verdict. extraction, the static engines,
-// and (later) detonation hang off this as the pipeline grows.
+// SubmissionWorkflow is the durable root of every analysis. M0 spine: run the
+// static engine in its jail, validate through the broker, roll up a
+// fail-closed verdict. extraction, more static engines, and (later)
+// detonation hang off this as the pipeline grows.
 func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipeline.SubmissionResult, error) {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
+		// generous: covers three jail runs plus retries on infra hiccups.
+		StartToCloseTimeout: 3 * time.Minute,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	})
 
-	// fail-closed default: a submission is never BENIGN just because we have not
-	// finished. it starts UNKNOWN and only deterministic evidence moves it.
+	// fail-closed default: a submission is never BENIGN just because we have
+	// not finished. it starts UNKNOWN and only evidence moves it, only upward
+	// while anything is missing.
 	res := pipeline.SubmissionResult{
 		SubmissionID: in.SubmissionID,
 		SHA256:       in.SHA256,
 		Verdict:      pipeline.Unknown,
 	}
 
-	var ident IdentifyResult
-	if err := workflow.ExecuteActivity(ctx, IdentifyActivity, in).Get(ctx, &ident); err != nil {
-		// an engine crash or timeout floors the node to SUSPICIOUS and flags it
-		// incomplete. it does not fall through to BENIGN.
-		res.Verdict = pipeline.Suspicious
+	var a *Analyzer // nil receiver: activity resolution by name only
+	var rep pipeline.EngineReport
+	if err := workflow.ExecuteActivity(ctx, a.StaticAnalyzeActivity, in).Get(ctx, &rep); err != nil {
+		// a jail failure, broker reject, timeout, or crash floors the node to
+		// SUSPICIOUS and flags it incomplete. it never falls through to BENIGN.
+		res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
 		res.Incomplete = true
+		res.Findings = append(res.Findings, pipeline.Finding{
+			Engine:  "mal-static-yara",
+			Type:    "error",
+			Detail:  "static analysis did not complete; verdict floored",
+			Verdict: pipeline.Suspicious,
+		})
 		return res, nil
 	}
 
-	res.FileType = ident.FileType
-	res.Findings = append(res.Findings, pipeline.Finding{
-		Engine:  "mal-ident",
-		Type:    "file-type",
-		Detail:  ident.FileType,
-		Verdict: pipeline.Unknown,
-	})
-	// M0 has no scoring engine yet, so the honest rolled-up verdict is UNKNOWN.
-	// the static engines will contribute real signal in M1.
+	// the lattice join: the most suspicious signal wins, benign masks nothing.
+	res.Findings = append(res.Findings, rep.Findings...)
+	res.Verdict = pipeline.Max(res.Verdict, rep.Verdict)
+	if rep.Incomplete {
+		res.Incomplete = true
+		res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
+	}
 	return res, nil
-}
-
-// IdentifyResult is the typed output of the identify step.
-type IdentifyResult struct {
-	FileType string
-}
-
-// IdentifyActivity runs mal-ident over the artifact. in M0 it shells out to the
-// worker binary to prove the dispatch path. the next milestone runs it as a
-// single-use, credential-less, no-network container with the artifact on a
-// read-only mounted fd and the result crossing a bounded schema over a uds.
-func IdentifyActivity(ctx context.Context, in pipeline.SubmissionInput) (IdentifyResult, error) {
-	bin := os.Getenv("MAL_IDENT_BIN")
-	if bin == "" {
-		bin = "./target/debug/mal-ident"
-	}
-	out, err := exec.CommandContext(ctx, bin, in.ScratchPath).Output()
-	if err != nil {
-		activity.GetLogger(ctx).Error("mal-ident failed", "sha256", in.SHA256, "err", err)
-		return IdentifyResult{}, err
-	}
-	return IdentifyResult{FileType: strings.TrimSpace(string(out))}, nil
 }
