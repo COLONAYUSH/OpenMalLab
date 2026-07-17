@@ -283,14 +283,5 @@ OpenMalLab stands on the work of the teams behind [Magika](https://github.com/go
 ---
 
 <div align="center">
-
-### Star history
-
-<a href="https://star-history.com/#COLONAYUSH/OpenMalLab&Date">
-  <img src="https://api.star-history.com/svg?repos=COLONAYUSH/OpenMalLab&type=Date" alt="Star history chart" width="620" />
-</a>
-
-<br /><br />
 <sub>Built in the open. Containment-first, from commit one.</sub>
-
 </div>
