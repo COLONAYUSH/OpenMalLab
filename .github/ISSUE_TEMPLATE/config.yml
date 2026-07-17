@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/COLONAYUSH/OpenMalLab/security/advisories/new
+    about: Do not open a public issue. Report vulnerabilities privately. Never attach live samples.
+  - name: Read the design
+    url: https://github.com/COLONAYUSH/OpenMalLab/blob/main/docs/ARCHITECTURE.md
+    about: The frozen, reviewed architecture and threat model.

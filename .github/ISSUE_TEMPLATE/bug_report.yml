@@ -1,0 +1,58 @@
+name: Bug report
+description: Something in OpenMalLab behaved incorrectly.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Before you continue:
+        - This is not for security vulnerabilities. For those, see SECURITY.md and report privately.
+        - Never attach a live malware sample. Reference samples by SHA-256 only.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+      placeholder: The verdict came back UNKNOWN, but I expected...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce it? Reference any sample by its SHA-256, never attach it.
+      placeholder: |
+        1. docker compose -f deploy/compose.yaml up -d
+        2. submit a file with sha256 ...
+        3. GET /v1/submissions/{id} returns ...
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - gateway
+        - orchestrator
+        - a worker (ident / yara / extract / capa)
+        - the broker
+        - the console
+        - build / deploy
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, Docker version, and the commit or tag you are on.
+      placeholder: macOS 15 arm64, Docker 29, main @ abc1234
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any relevant output. Redact anything sensitive.
+      render: shell

@@ -2,6 +2,10 @@
 
 OpenMalLab is a security tool that processes hostile input. We take its own security seriously.
 
+## Supported versions
+
+OpenMalLab is pre-release and moving fast. Security fixes land on `main`; there is no long-term support branch yet. Build from `main` for the latest fixes, and pin a commit for reproducibility.
+
 ## Reporting a vulnerability
 **Do not open a public issue for a security vulnerability.** Report it privately via GitHub's
 [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)

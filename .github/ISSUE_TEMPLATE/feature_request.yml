@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a capability, an engine, or an improvement.
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that OpenMalLab does not let you do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: The capability, engine, or change you want. If it is an engine, name the upstream tool and its license.
+    validations:
+      required: true
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Which phase does this fit
+      description: See the roadmap in the README.
+      options:
+        - Phase 1 (static wedge)
+        - Phase 1.5
+        - Phase 2 (detonation, hunting, AI)
+        - Phase 3 (frontier)
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: containment
+    attributes:
+      label: Containment impact
+      description: Does this touch sample-derived bytes, add a jail capability, or cross a trust boundary? If unsure, say so.
