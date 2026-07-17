@@ -68,11 +68,22 @@ def emit(findings, verdict, incomplete):
     sys.stdout.flush()
 
 
+# the broker caps finding.detail at 8192 BYTES, not code points. cap by encoded
+# bytes so a multibyte detail cannot pass this worker yet blow the broker's byte
+# cap and get the WHOLE report rejected. capa details are usually ASCII rule
+# namespaces, but a rule name or match string could carry unicode.
+def cap_detail(detail):
+    b = detail.encode("utf-8", "replace")
+    if len(b) <= 8000:
+        return detail
+    return b[:8000].decode("utf-8", "ignore")
+
+
 def finding(kind, detail, attck, verdict):
     return {
         "engine": "mal-capa",
         "type": kind,
-        "detail": detail[:8000],
+        "detail": cap_detail(detail),
         "attck": attck[:64],
         "verdict": verdict,
     }
@@ -91,6 +102,39 @@ def fail(msg):
 def not_applicable(reason):
     emit([finding("not-applicable", reason, "", "UNKNOWN")], "UNKNOWN", False)
     sys.exit(0)
+
+
+# capa_argv is the exact command. keeping it a pure function lets the selftest
+# assert the sig/rule wiring: without -s SIGS capa raises OSError on every PE
+# and fails closed (the regression that shipped once), so the flag must be here.
+def capa_argv(sample):
+    return [CAPA, "-q", "-j", "-r", RULES, "-s", SIGS, sample]
+
+
+# phrases that specifically mean "capa does not support this file type" (magika
+# mis-gated a non-executable). narrow and anchored ON PURPOSE: a bare "format"
+# or "corrupt" also appears in genuine crash tracebacks, and treating a real
+# analysis failure on a confirmed executable as not-applicable would report it
+# UNKNOWN+complete, benign-by-omission. anything not matching here fails closed.
+NOT_APPLICABLE_HINTS = (
+    "not a pe, elf",  # capa: "input file does not appear to be a PE, ELF, or shellcode file"
+    "does not appear to be a pe",
+    "does not appear to be a supported",
+    "input file does not appear",
+    "not a supported file",
+    "unsupported file type",  # deliberately "file type", NOT "format" (matches format-char errors)
+)
+
+
+# classify_no_output decides what an empty-stdout capa run means. pure and
+# testable. only a narrow "unsupported file type" signal is a clean
+# not-applicable; every other no-output (crash, timeout, parse abort on a real
+# executable) is a hard failure that floors SUSPICIOUS+incomplete.
+def classify_no_output(returncode, stderr):
+    low = stderr.lower()
+    if any(h in low for h in NOT_APPLICABLE_HINTS):
+        return "not_applicable", "capa does not analyze this file type"
+    return "fail", "capa produced no result (exit %d)" % returncode
 
 
 def attck_of(meta):
@@ -167,6 +211,25 @@ def selftest():
     # empty doc -> just a summary, UNKNOWN.
     f2, w2, _ = map_capa_doc({"rules": {}})
     assert w2 == "UNKNOWN" and len(f2) == 1 and f2[0]["type"] == "capa-summary", (w2, f2)
+
+    # the sig/rule wiring must be present: without -s SIGS capa raises OSError on
+    # every PE and fails closed. pin the flags and their operands' order.
+    argv = capa_argv("/in/sample")
+    assert "-s" in argv and argv[argv.index("-s") + 1] == SIGS, argv
+    assert "-r" in argv and argv[argv.index("-r") + 1] == RULES, argv
+    assert argv[-1] == "/in/sample", argv
+
+    # the fail-closed no-output classifier: only anchored unsupported-format
+    # phrases are not-applicable; a crash traceback mentioning "format" or an
+    # empty stderr on a confirmed executable is a hard failure, never clean.
+    assert classify_no_output(1, "Unsupported format: not a PE, ELF, or shellcode")[0] == "not_applicable"
+    assert classify_no_output(1, "input file does not appear to be a PE file")[0] == "not_applicable"
+    assert classify_no_output(1, "Traceback ... ValueError: unsupported format character in vivisect")[0] == "fail"
+    assert classify_no_output(1, "corrupt section header")[0] == "fail"
+    assert classify_no_output(2, "")[0] == "fail"
+
+    # detail is capped by BYTES so a multibyte rule name cannot blow the broker cap.
+    assert len(cap_detail("\u4e2d" * 4000).encode("utf-8")) <= 8192
     print("mal-capa selftest ok")
 
 
@@ -177,7 +240,7 @@ def main():
     sample = sys.argv[1] if len(sys.argv) > 1 else "/in/sample"
     try:
         proc = subprocess.run(
-            [CAPA, "-q", "-j", "-r", RULES, "-s", SIGS, sample],
+            capa_argv(sample),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=TIMEOUT,
@@ -193,12 +256,14 @@ def main():
     err = proc.stderr.decode("utf-8", "replace")
 
     if not out:
-        # no document: distinguish "not a program capa handles" from a real
-        # failure using capa's stderr, and fail closed if unsure.
-        low = err.lower()
-        if any(k in low for k in ("unsupported", "not a supported", "invalid pe", "corrupt", "format")):
-            not_applicable("capa does not analyze this file type")
-        fail("capa produced no result (exit %d)" % proc.returncode)
+        # no document: only a narrow "unsupported file type" signal is a clean
+        # not-applicable; anything else (crash, aborted parse on a real
+        # executable) fails closed. see classify_no_output.
+        action, detail = classify_no_output(proc.returncode, err)
+        if action == "not_applicable":
+            not_applicable(detail)
+        else:
+            fail(detail)
         return
 
     try:

@@ -40,8 +40,20 @@ def emit(findings, verdict, incomplete):
     sys.stdout.flush()
 
 
+# the broker caps finding.detail at 8192 BYTES, not code points. cap here by
+# encoded bytes so a recovered multibyte string (Cyrillic/CJK/emoji, common in
+# non-English malware) cannot slip past a code-point cap and then blow the
+# broker's byte cap, which rejects the ENTIRE report and loses all evidence.
+# leave headroom under 8192.
+def cap_detail(detail):
+    b = detail.encode("utf-8", "replace")
+    if len(b) <= 8000:
+        return detail
+    return b[:8000].decode("utf-8", "ignore")
+
+
 def finding(kind, detail, verdict):
-    return {"engine": "mal-floss", "type": kind, "detail": detail[:8000], "attck": "", "verdict": verdict}
+    return {"engine": "mal-floss", "type": kind, "detail": cap_detail(detail), "attck": "", "verdict": verdict}
 
 
 # fail-closed: an analysis that could not complete floors to SUSPICIOUS and is
@@ -79,9 +91,26 @@ def run_floss(sample, phases, timeout):
         return None, "badjson"
 
 
+# static_outcome classifies the cheap static phase's result into the fail-closed
+# action. pure and testable. the static phase is not the pathological one, so a
+# timeout or error here is a hard failure (SUSPICIOUS+incomplete), never a clean
+# result; only an unsupported format is a legitimate not-applicable.
+def static_outcome(doc, err):
+    if err == "unsupported":
+        return "not_applicable", "floss only decodes PE and shellcode; this file is out of scope"
+    if doc is None:
+        return "fail", "floss static-string extraction failed (%s)" % (err or "no output")
+    return "ok", ""
+
+
 def strings_of(doc, key):
     out = []
-    for s in ((doc or {}).get("strings", {}) or {}).get(key, []) or []:
+    strings = (doc or {}).get("strings", {})
+    # FLOSS owns this schema, but a version/format change that made "strings" a
+    # list (not a dict) would crash .get; guard it so we degrade, not explode.
+    if not isinstance(strings, dict):
+        return out
+    for s in (strings.get(key, []) or []):
         v = s.get("string") if isinstance(s, dict) else s
         if v:
             out.append(str(v))
@@ -108,12 +137,26 @@ def map_floss(static_doc, emu_doc, emu_incomplete):
     ))
 
     budget = MAX_STRINGS
+    dropped = 0
     for kind, items in (("decoded-string", decoded), ("stack-string", stack), ("tight-string", tight)):
         for s in items:
             if budget <= 0:
-                break
+                # count the high-value obfuscated strings we could not emit.
+                dropped += 1
+                continue
             findings.append(finding(kind, s, "UNKNOWN"))
             budget -= 1
+
+    # never truncate silently: if obfuscated strings were dropped at the cap,
+    # say so with a marker, the way capa does for its capability list. the
+    # static-string sample below is summarized-by-count on purpose and is not
+    # counted as a truncation.
+    if dropped:
+        findings.append(finding(
+            "strings-truncated",
+            "recovered-string list capped at %d; %d obfuscated strings omitted (see the summary counts)" % (MAX_STRINGS, dropped),
+            "UNKNOWN",
+        ))
 
     # a bounded sample of static strings for context; the count above is the
     # full picture.
@@ -150,6 +193,34 @@ def selftest():
     # a timed-out emulation phase: static kept, run marked incomplete.
     f2, v2, inc2 = map_floss(static_doc, {}, True)
     assert inc2 and v2 == "UNKNOWN" and any(f["type"] == "decoding-incomplete" for f in f2), (v2, inc2, f2)
+
+    # emulation completed with only static strings: complete, no incomplete marker.
+    f3, v3, inc3 = map_floss(static_doc, {"strings": {}}, False)
+    assert not inc3 and v3 == "UNKNOWN", (v3, inc3)
+    assert not any(f["type"] == "decoding-incomplete" for f in f3), f3
+
+    # detail is capped by BYTES, not code points: a multibyte string must stay
+    # under the broker's 8192-byte cap so it can never reject the whole report.
+    big = cap_detail("\u0416" * 6000)  # Cyrillic Zhe, 2 utf-8 bytes each
+    assert len(big.encode("utf-8")) <= 8192, len(big.encode("utf-8"))
+
+    # over-budget obfuscated strings are truncated WITH a marker, never silently.
+    many = {"strings": {"decoded_strings": [{"string": "d%d" % i} for i in range(MAX_STRINGS + 25)]}}
+    f4, _, _ = map_floss({"strings": {}}, many, False)
+    assert any(f["type"] == "strings-truncated" for f in f4), "silent truncation"
+    assert sum(1 for f in f4 if f["type"] == "decoded-string") == MAX_STRINGS, "budget not enforced"
+
+    # the fail-closed static classifier: unsupported is the only clean out;
+    # every other no-output is a hard failure, never a clean/not-applicable pass.
+    assert static_outcome(None, "unsupported")[0] == "not_applicable"
+    assert static_outcome(None, "timeout")[0] == "fail"
+    assert static_outcome(None, "spawn")[0] == "fail"
+    assert static_outcome(None, "badjson")[0] == "fail"
+    assert static_outcome(None, "error")[0] == "fail"
+    assert static_outcome({"strings": {}}, None)[0] == "ok"
+
+    # a schema drift where "strings" is a list must not crash strings_of.
+    assert strings_of({"strings": []}, "static_strings") == []
     print("mal-floss selftest ok")
 
 
@@ -161,15 +232,12 @@ def main():
     sample = sys.argv[1] if len(sys.argv) > 1 else "/in/sample"
 
     static_doc, serr = run_floss(sample, ["static"], STATIC_TIMEOUT)
-    if serr == "unsupported":
-        not_applicable("floss only decodes PE and shellcode; this file is out of scope")
+    action, detail = static_outcome(static_doc, serr)
+    if action == "not_applicable":
+        not_applicable(detail)
         return
-    if serr in ("spawn",):
-        fail("could not run floss")
-        return
-    # static timing out or erroring is a hard failure (it is the cheap phase).
-    if static_doc is None:
-        fail("floss static-string extraction failed (%s)" % serr)
+    if action == "fail":
+        fail(detail)
         return
 
     # the pathological phase, under its own budget. a timeout here is degraded,
