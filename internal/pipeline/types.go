@@ -269,7 +269,8 @@ type SubmissionInput struct {
 	SubmissionID string `json:"submission_id"`
 	DomainID     string `json:"domain_id"` // one trust domain in phase 1, present from day one
 	SHA256       string `json:"sha256"`
-	ScratchPath  string `json:"scratch_path"` // vault-local path to the stored bytes
+	ScratchPath  string `json:"scratch_path"`       // vault-local path to the stored bytes
+	Filename     string `json:"filename,omitempty"` // the submitted name, hostile: display-only, always defanged
 }
 
 // Finding is one piece of evidence-linked signal from an engine. It is the
@@ -322,6 +323,7 @@ type EngineReport struct {
 type SubmissionResult struct {
 	SubmissionID string     `json:"submission_id"`
 	SHA256       string     `json:"sha256"`
+	Filename     string     `json:"filename,omitempty"` // the submitted name, hostile: display-only, always defanged
 	FileType     string     `json:"file_type,omitempty"`
 	Verdict      Verdict    `json:"verdict"`
 	Score        int        `json:"score"`      // 0-100 triage priority, confidence-weighted

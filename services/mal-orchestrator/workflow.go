@@ -39,6 +39,7 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 	res := pipeline.SubmissionResult{
 		SubmissionID: in.SubmissionID,
 		SHA256:       in.SHA256,
+		Filename:     in.Filename,
 		Verdict:      pipeline.Unknown, // fail-closed bottom; only evidence moves it, only up
 	}
 	var a *Analyzer // nil receiver: activities resolve by name

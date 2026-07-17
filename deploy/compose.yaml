@@ -104,6 +104,25 @@ services:
       - no-new-privileges
     restart: unless-stopped
 
+  web:
+    build:
+      context: ..
+      dockerfile: services/mal-web/Dockerfile
+    image: openmallab/mal-web:m0
+    environment:
+      MAL_GATEWAY_URL: http://gateway:8080
+    ports:
+      - "8090:8090"
+    depends_on:
+      gateway:
+        condition: service_started
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges
+    restart: unless-stopped
+
   orchestrator:
     build:
       context: ..
