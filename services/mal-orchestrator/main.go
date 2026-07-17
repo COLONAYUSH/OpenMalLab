@@ -102,6 +102,9 @@ func main() {
 	if n := a.sweepStaging(); n > 0 {
 		log.Printf("swept %d leftover staging dirs", n)
 	}
+	if n := a.sweepVaultTemps(); n > 0 {
+		log.Printf("swept %d leftover vault temp files", n)
+	}
 
 	w := worker.New(tc, TaskQueue, worker.Options{
 		// each activity holds a jail (512m, 1 cpu); keep the fleet bounded.

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
+	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/testsuite"
 )
 
 func identWith(findings ...pipeline.Finding) pipeline.EngineReport {
@@ -65,6 +68,87 @@ func TestIsPEGatesFloss(t *testing.T) {
 		if got := isPE(c.ident); got != c.want {
 			t.Fatalf("%s: isPE=%v want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// a bottomless archive nest must never roll up as a clean, complete analysis.
+// the depth cap once dropped everything past maxDepth with no incomplete flag
+// and no floor (benign-by-omission); this pins the fail-closed behavior: the
+// deep subtree floors to SUSPICIOUS+incomplete with a recursion-cap marker.
+func TestSubmissionWorkflowDepthCapFailsClosed(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	a := &Analyzer{}
+	// every artifact identifies as a zip, so extraction runs and capa/floss
+	// (executable/PE-gated) never do; no mock needed for them.
+	env.OnActivity(a.IdentifyActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-ident", Verdict: pipeline.Unknown,
+			Findings: []pipeline.Finding{{Engine: "mal-ident", Type: "file-type", Detail: "zip", Verdict: pipeline.Unknown}}}, nil)
+	env.OnActivity(a.StaticAnalyzeActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-static-yara", Verdict: pipeline.Unknown}, nil)
+	// extraction always yields one child: a nest with no bottom. depth, not the
+	// sha, is what advances each level, so a fixed child sha still drives it down.
+	env.OnActivity(a.ExtractActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-extract", Verdict: pipeline.Unknown,
+			Children: []pipeline.Child{{SHA256: strings.Repeat("b", 64), Name: "inner.zip", Size: 10}}}, nil)
+
+	env.ExecuteWorkflow(SubmissionWorkflow, pipeline.SubmissionInput{SubmissionID: "s", SHA256: strings.Repeat("a", 64)})
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var res pipeline.SubmissionResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if !res.Incomplete {
+		t.Fatal("a bottomless nest must roll up incomplete, never a clean complete result")
+	}
+	if res.Verdict < pipeline.Suspicious {
+		t.Fatalf("depth cap must floor to at least SUSPICIOUS, got %v", res.Verdict)
+	}
+	hasCap := false
+	for _, f := range res.Findings {
+		if f.Type == "recursion-cap" {
+			hasCap = true
+		}
+	}
+	if !hasCap {
+		t.Fatal("depth cap must emit a recursion-cap marker, not silently drop the subtree")
+	}
+}
+
+// the submission verdict must be joined from each FINDING, not only the
+// worker's self-reported top verdict: a worker that emits a MALICIOUS finding
+// under an UNKNOWN top verdict must still escalate the submission. trusted code
+// does not trust the worker's rollup.
+func TestSubmissionWorkflowLiftsVerdictFromFindings(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	a := &Analyzer{}
+	env.OnActivity(a.IdentifyActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-ident", Verdict: pipeline.Unknown,
+			Findings: []pipeline.Finding{{Engine: "mal-ident", Type: "file-type", Detail: "txt", Verdict: pipeline.Unknown}}}, nil)
+	env.OnActivity(a.StaticAnalyzeActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-static-yara", Verdict: pipeline.Unknown, // under-reported top
+			Findings: []pipeline.Finding{{Engine: "mal-static-yara", Type: "yara", Detail: "hit", Verdict: pipeline.Malicious}}}, nil)
+	env.OnActivity(a.ExtractActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-extract", Verdict: pipeline.Unknown}, nil)
+
+	env.ExecuteWorkflow(SubmissionWorkflow, pipeline.SubmissionInput{SubmissionID: "s", SHA256: strings.Repeat("a", 64)})
+
+	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
+		t.Fatalf("workflow did not complete cleanly: %v", env.GetWorkflowError())
+	}
+	var res pipeline.SubmissionResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if res.Verdict != pipeline.Malicious {
+		t.Fatalf("verdict %v, want MALICIOUS lifted from the finding despite an UNKNOWN worker top", res.Verdict)
 	}
 }
 

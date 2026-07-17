@@ -13,10 +13,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"syscall"
 	"time"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
@@ -24,7 +27,6 @@ import (
 	"github.com/docker/docker/client"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
-	"regexp"
 )
 
 // maxIngestBytes bounds a single extracted child the orchestrator will pull
@@ -263,6 +265,24 @@ func (a *Analyzer) sweepStaging() int {
 	return n
 }
 
+// sweepVaultTemps removes .ingest-* temp files left in the vault by an ingest
+// killed between CreateTemp and Rename. they never collide with real vault
+// entries (keyed by 64-hex sha) but accumulate across crashes; this is the
+// vault analogue of sweepStaging and reapLeakedJails.
+func (a *Analyzer) sweepVaultTemps() int {
+	matches, err := filepath.Glob(filepath.Join(a.vaultPath, ".ingest-*"))
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, m := range matches {
+		if os.Remove(m) == nil {
+			n++
+		}
+	}
+	return n
+}
+
 // ingestChild copies one staged child into the vault, streaming through a
 // hasher, and only accepts it if the recomputed sha256 matches the name the
 // extractor gave the file. this is what lets the orchestrator distrust the
@@ -273,7 +293,11 @@ func (a *Analyzer) ingestChild(stageDir, claimedSHA string) (uint64, error) {
 		return 0, fmt.Errorf("child sha not hex")
 	}
 	src := filepath.Join(stageDir, claimedSHA)
-	info, err := os.Stat(src)
+	// Lstat, not Stat: the extractor is untrusted and has a writable /out, so it
+	// could stage /out/<sha> as a symlink pointing anywhere on the orchestrator's
+	// filesystem (which runs as root with DAC_OVERRIDE). Lstat does not follow it,
+	// so a symlink fails the regular-file check below and is refused outright.
+	info, err := os.Lstat(src)
 	if err != nil {
 		return 0, fmt.Errorf("stat child: %w", err)
 	}
@@ -284,7 +308,11 @@ func (a *Analyzer) ingestChild(stageDir, claimedSHA string) (uint64, error) {
 		return 0, fmt.Errorf("child exceeds ingest cap")
 	}
 
-	f, err := os.Open(src)
+	// O_NOFOLLOW closes the Lstat->open TOCTOU: even if the name is swapped for a
+	// symlink after the check, opening a final-component symlink fails here. the
+	// child name is validated 64-hex, so there is no attacker-controlled parent
+	// component to traverse.
+	f, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return 0, fmt.Errorf("open child: %w", err)
 	}
@@ -298,9 +326,14 @@ func (a *Analyzer) ingestChild(stageDir, claimedSHA string) (uint64, error) {
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(f, maxIngestBytes+1))
 	tmp.Close()
-	if err != nil || n > maxIngestBytes {
+	if err != nil {
 		os.Remove(tmpName)
 		return 0, fmt.Errorf("copy child: %w", err)
+	}
+	if n > maxIngestBytes {
+		// the file grew past the cap between Lstat and copy (or lied about size).
+		os.Remove(tmpName)
+		return 0, errors.New("child exceeds ingest cap (streamed)")
 	}
 	sum := hex.EncodeToString(h.Sum(nil))
 	if sum != claimedSHA {

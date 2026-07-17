@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -160,11 +161,19 @@ func applyOverrides(cfg *container.Config, hc *container.HostConfig, spec jailSp
 		hc.Memory = spec.memoryBytes
 		hc.MemorySwap = spec.memoryBytes // still zero swap headroom
 	}
-	if spec.scratchSize != "" {
-		// keep every hardening flag; only the size changes.
+	if spec.scratchSize != "" && scratchSizeRe.MatchString(spec.scratchSize) {
+		// keep every hardening flag; only the size changes. the size is
+		// regex-validated first, so a malformed override (e.g. "256m,exec")
+		// can never append a tmpfs option that turns off noexec/nosuid/nodev.
+		// an invalid value is ignored and the tight 64m default stands.
 		hc.Tmpfs["/scratch"] = "rw,noexec,nosuid,nodev,size=" + spec.scratchSize
 	}
 }
+
+// scratchSizeRe bounds a scratch-size override to a bare size token so a
+// per-engine override can never smuggle an extra, security-loosening tmpfs
+// option through string concatenation. "256m" is accepted; "256m,exec" is not.
+var scratchSizeRe = regexp.MustCompile(`^[0-9]+[kKmMgG]?$`)
 
 // runJailed runs one single-use jailed container to completion: create,
 // attach, start, feed stdin if any, capture bounded stdout/stderr, enforce

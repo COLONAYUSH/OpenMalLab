@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"time"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
@@ -14,6 +15,15 @@ import (
 const (
 	maxDepth     = 8
 	maxArtifacts = 200
+
+	// activity timeouts. the light engines finish fast, but capa and floss run
+	// vivisect emulation whose jail wall clocks are 300s and 360s. the Temporal
+	// activity timeout MUST exceed jail-wall + broker-pass + docker overhead, or
+	// Temporal kills the engine before its own budget: the graceful timeout and
+	// partial-result paths never run, and the node needlessly floors after 3x
+	// wasted work. keep the invariant: activity timeout > jail wall > tool timeout.
+	defaultActivityTimeout = 3 * time.Minute
+	heavyActivityTimeout   = 8 * time.Minute // covers floss (360s) + broker + slack
 )
 
 // workItem is one node of the artifact tree waiting to be analyzed. path is the
@@ -32,8 +42,16 @@ type workItem struct {
 // signal anywhere in the tree and nothing is ever benign by omission.
 func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipeline.SubmissionResult, error) {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 3 * time.Minute,
+		StartToCloseTimeout: defaultActivityTimeout,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
+	})
+	// heavy engines (capa, floss) get a longer activity timeout so their own
+	// jail wall clock, not Temporal, is what bounds them. a timeout here is
+	// deterministic (the same big sample will time out again), so a single
+	// attempt: retrying only burns another 2 GiB jail for the same result.
+	heavyCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: heavyActivityTimeout,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
 
 	res := pipeline.SubmissionResult{
@@ -65,6 +83,12 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 		for i := range rep.Findings {
 			rep.Findings[i].Path = path
 			res.Findings = append(res.Findings, rep.Findings[i])
+			// lift from each finding, not only the worker's self-reported top
+			// verdict: a buggy or compromised worker that emits a MALICIOUS
+			// finding under an UNKNOWN top verdict must still escalate the
+			// submission. the broker validates each verdict independently, so
+			// trusted code joins them itself rather than trusting the rollup.
+			res.Verdict = pipeline.Max(res.Verdict, rep.Findings[i].Verdict)
 		}
 		res.Verdict = pipeline.Max(res.Verdict, rep.Verdict)
 		if rep.Incomplete {
@@ -76,6 +100,7 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 
 	queue := []workItem{{SHA256: in.SHA256, Path: "", Depth: 0}}
 	processed := 0
+	depthCapped := false // emit the depth-cap marker at most once
 
 	for len(queue) > 0 {
 		if processed >= maxArtifacts {
@@ -115,29 +140,47 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 		// formats, and loading its rule set per artifact is expensive, so we
 		// gate on what magika identified (content, never the extension).
 		if isExecutable(identRep) {
-			capaF := workflow.ExecuteActivity(ctx, a.CapaActivity, artifact)
+			capaF := workflow.ExecuteActivity(heavyCtx, a.CapaActivity, artifact)
 			fold(item.Path, "mal-capa", capaF)
 		}
 
 		// string recovery, only for PE: FLOSS decodes PE and shellcode only, and
 		// its emulation is expensive, so we gate it on magika identifying a PE.
 		if isPE(identRep) {
-			flossF := workflow.ExecuteActivity(ctx, a.FlossActivity, artifact)
+			flossF := workflow.ExecuteActivity(heavyCtx, a.FlossActivity, artifact)
 			fold(item.Path, "mal-floss", flossF)
 		}
 
-		// unpack one level while within the depth cap, then enqueue children.
-		// extraction runs on every artifact within depth: we do not rely on any
-		// single identifier being right about whether something is a container.
-		if item.Depth < maxDepth {
-			extractF := workflow.ExecuteActivity(ctx, a.ExtractActivity, artifact)
-			extractRep, ok := fold(item.Path, "mal-extract", extractF)
-			if ok {
-				for _, c := range extractRep.Children {
+		// unpack one level. extraction runs on every artifact (we never trust an
+		// identifier about whether something is a container). children are
+		// enqueued only while within the depth cap; a child that exists AT the
+		// cap floors the node the same fail-closed way the artifact-count cap
+		// does, so a deep nest is never silently reported clean. this is the
+		// counterpart to the maxArtifacts branch above: report the truncation,
+		// never quietly stop.
+		extractF := workflow.ExecuteActivity(ctx, a.ExtractActivity, artifact)
+		extractRep, ok := fold(item.Path, "mal-extract", extractF)
+		if ok {
+			for _, c := range extractRep.Children {
+				if item.Depth+1 <= maxDepth {
 					queue = append(queue, workItem{
 						SHA256: c.SHA256,
 						Path:   crumb(item.Path, c.Name),
 						Depth:  item.Depth + 1,
+					})
+					continue
+				}
+				if !depthCapped {
+					depthCapped = true
+					res.Incomplete = true
+					res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
+					res.Findings = append(res.Findings, pipeline.Finding{
+						Engine:     "mal-orchestrator",
+						Type:       "recursion-cap",
+						Detail:     "archive nesting exceeded the depth cap; deeper children were not analyzed",
+						Verdict:    pipeline.Suspicious,
+						Confidence: pipeline.ConfLow,
+						Path:       item.Path,
 					})
 				}
 			}
@@ -198,7 +241,17 @@ func isPE(ident pipeline.EngineReport) bool {
 }
 
 // crumb extends a breadcrumb path with a child's name inside its container.
+// the name comes from inside a hostile archive and is length-checked by the
+// broker but not sanitized, so control characters (newlines, ANSI escapes)
+// are stripped here before the name enters Path, which flows out through the
+// api. the console defangs again at render; this closes the api-level hole.
 func crumb(parent, name string) string {
+	name = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '.'
+		}
+		return r
+	}, name)
 	if parent == "" {
 		return name
 	}

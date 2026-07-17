@@ -180,6 +180,29 @@ func TestOverridesRaiseCapsButNeverLoosenSecurity(t *testing.T) {
 	if hc2.Memory != 512<<20 || len(cfg2.Env) != 0 || hc2.Tmpfs["/scratch"] != "rw,noexec,nosuid,nodev,size=64m" {
 		t.Fatal("zero-value override must be a no-op")
 	}
+
+	// a malformed scratch size must never inject an extra tmpfs option that
+	// loosens noexec/nosuid/nodev: the value is regex-validated and an invalid
+	// one is ignored so the tight default stands. the comma cases are the real
+	// attack (a second option after the size).
+	const tight = "rw,noexec,nosuid,nodev,size=64m"
+	for _, bad := range []string{"256m,exec", "64m,nosuid=0", "1g,rw", "256m,", "256m exec", "exec", "-1m", "; rm -rf"} {
+		cfgB := jailedConfig("x")
+		hcB := jailedHostConfig()
+		applyOverrides(cfgB, hcB, jailSpec{scratchSize: bad})
+		if got := hcB.Tmpfs["/scratch"]; got != tight {
+			t.Fatalf("malformed scratch %q changed the tmpfs to %q (injection risk)", bad, got)
+		}
+	}
+	// well-formed size tokens are still honored.
+	for _, good := range []string{"128m", "2g", "512k", "1073741824"} {
+		cfgG := jailedConfig("x")
+		hcG := jailedHostConfig()
+		applyOverrides(cfgG, hcG, jailSpec{scratchSize: good})
+		if got := hcG.Tmpfs["/scratch"]; got != "rw,noexec,nosuid,nodev,size="+good {
+			t.Fatalf("valid scratch %q rejected: %q", good, got)
+		}
+	}
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
