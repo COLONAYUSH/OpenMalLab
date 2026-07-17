@@ -137,12 +137,23 @@ def classify_no_output(returncode, stderr):
     return "fail", "capa produced no result (exit %d)" % returncode
 
 
-def attck_of(meta):
+# capa maps a capability to a FULL set of ATT&CK techniques plus MBC behaviors,
+# and dropping all but the first throws away most of why an analyst runs capa.
+# attck_ids returns them all (ATT&CK first, then MBC); attck_of keeps the single
+# primary id for the finding's attck chip (the wire field is one string), and
+# map_capa_doc appends the whole set to the detail so nothing is lost.
+def attck_ids(meta):
+    ids = []
     for key in ("attack", "mbc"):
-        items = meta.get(key) or []
-        if items and isinstance(items[0], dict) and items[0].get("id"):
-            return items[0]["id"]
-    return ""
+        for item in (meta.get(key) or []):
+            if isinstance(item, dict) and item.get("id"):
+                ids.append(item["id"])
+    return ids
+
+
+def attck_of(meta):
+    ids = attck_ids(meta)
+    return ids[0] if ids else ""
 
 
 def verdict_for(namespace):
@@ -168,7 +179,12 @@ def map_capa_doc(doc):
         namespace = meta.get("namespace") or ""
         verdict = verdict_for(namespace)
         detail = ("%s: %s" % (namespace, name)) if namespace else name
-        findings.append(finding("capability", detail, attck_of(meta), verdict))
+        ids = attck_ids(meta)
+        # surface the full ATT&CK + MBC set (capa's whole point); the chip keeps
+        # the primary id, the detail carries them all.
+        if len(ids) > 1:
+            detail = "%s [%s]" % (detail, ", ".join(ids))
+        findings.append(finding("capability", detail, ids[0] if ids else "", verdict))
         if RANK[verdict] > RANK[worst]:
             worst = verdict
     summary = finding(
@@ -195,6 +211,10 @@ def selftest():
             },
             "read file": {"meta": {"namespace": "host-interaction/file-system/read"}},
             "bare": {"meta": {}},
+            "beacon over http": {
+                "meta": {"namespace": "communication/c2",
+                         "attack": [{"id": "T1071"}, {"id": "T1071.001"}], "mbc": [{"id": "C0002"}]}
+            },
         }
     }
     findings, worst, truncated = map_capa_doc(doc)
@@ -204,6 +224,11 @@ def selftest():
     assert any(f["type"] == "capa-summary" for f in findings), "summary missing"
     inject = by_detail["host-interaction/process/inject: inject code into another process"]
     assert inject["verdict"] == "SUSPICIOUS" and inject["attck"] == "T1055", inject
+    # the full ATT&CK + MBC set is surfaced: primary id on the chip, all ids in
+    # the detail (this is capa's whole value, and we used to drop all but one).
+    beacon = next(f for f in findings if f["type"] == "capability" and "beacon over http" in f["detail"])
+    assert beacon["attck"] == "T1071", beacon
+    assert "T1071.001" in beacon["detail"] and "C0002" in beacon["detail"], beacon
     rc4 = by_detail["data-manipulation/encryption/rc4: encrypt data using RC4"]
     assert rc4["verdict"] == "UNKNOWN" and rc4["attck"] == "C0027", rc4
     read = by_detail["host-interaction/file-system/read: read file"]
