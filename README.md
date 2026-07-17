@@ -1,125 +1,169 @@
+<p align="center">
+  <img src="docs/brand/openmallab-logo.png" alt="OpenMalLab" width="300" />
+</p>
+
+<h1 align="center">OpenMalLab</h1>
+
+<p align="center">
+  <b>The sovereign, all-in-one malware analysis platform.</b><br />
+  Air-gap-first. Containment-first. Every verdict backed by evidence you can read.
+</p>
+
+<p align="center">
+  <a href="https://github.com/COLONAYUSH/OpenMalLab/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/COLONAYUSH/OpenMalLab/ci.yml?branch=main&style=flat-square&label=ci" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-1f9d63?style=flat-square" alt="License" /></a>
+  <img src="https://img.shields.io/badge/deploy-air--gap--first-ff5c5c?style=flat-square" alt="Air-gap first" />
+  <img src="https://img.shields.io/badge/phase%201-building-ffb340?style=flat-square" alt="Status" />
+  <br />
+  <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
+  <img src="https://img.shields.io/badge/Rust-1.9x-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/orchestration-Temporal-7a5cff?style=flat-square" alt="Temporal" />
+  <img src="https://img.shields.io/badge/PRs-welcome-aebccd?style=flat-square" alt="PRs welcome" />
+</p>
+
+<p align="center">
+  <a href="#quickstart">Quickstart</a> &nbsp;.&nbsp;
+  <a href="#how-it-works">How it works</a> &nbsp;.&nbsp;
+  <a href="#the-containment-model">Containment</a> &nbsp;.&nbsp;
+  <a href="#the-engines">Engines</a> &nbsp;.&nbsp;
+  <a href="#roadmap">Roadmap</a> &nbsp;.&nbsp;
+  <a href="docs/ARCHITECTURE.md">Design docs</a>
+</p>
+
+---
+
+OpenMalLab takes a suspicious file and tells you what it really is, with the evidence to back every word, without ever letting the file touch anything it should not. It runs fully offline, it is self-hostable, and it is built so that the malware you are studying can never reach out of the box you put it in.
+
+Most of what you need to analyze malware already exists. The problem is it lives in thirty different tools, half of them cloud-only and priced for enterprises, the other half single-purpose open source projects you stitch together yourself. Uploading a sample to a cloud service tips off the adversary and leaks your data. Nobody has fused deep static analysis, capability detection, and an explainable verdict into one self-hostable product you can run in an air-gapped lab, with a containment story you would stake your network on. That is what we are building, and the static core already runs.
+
+We do not reinvent the engines. We take the best open tools in the world (Google's Magika, VirusTotal's YARA-X, Mandiant's capa) and fuse them into one platform, each running inside a zero-trust jail we built around them. Best-of-breed detection, sovereign plumbing.
+
+---
+
+## Highlights
+
+- **Containment is the product, not a setting.** Every engine that touches hostile bytes runs as a single-use container with no network, no capabilities, a read-only root, a non-root user, and exactly one file mounted read-only. A 48-check boundary proof runs in CI and fails the build if the jail ever loosens.
+- **Best-of-breed engines, fused.** Magika for content-based identification, YARA-X for signatures, capa for ATT&CK-mapped capabilities, and a recursive archive unpacker, all behind one contract.
+- **Fail closed, always.** No file ever comes back clean because analysis got interrupted, capped, or crashed. Unknown is not benign. A crash raises suspicion, it never lowers it.
+- **A verdict you can rank and read.** Severity and confidence are separate axes, so a real signature hit outranks a crashed engine even though both are "suspicious." Every point of the score traces to the finding that earned it.
+- **Recursive by design.** A zip inside a zip inside an email is walked to the bottom, each artifact re-analyzed, every finding tagged with the breadcrumb path back to the root.
+- **Air-gap-first, not air-gap-eventually.** Zero mandatory external calls. Every image builds hermetically; every model and rule set is pinned by hash into the image.
+
+---
+
+## Quickstart
+
+Requires Docker with the Compose plugin. Everything runs locally, offline.
+
+```bash
+git clone https://github.com/COLONAYUSH/OpenMalLab
+cd OpenMalLab
+
+# build the jailed engine images and bring up the control node
+docker compose -f deploy/compose.yaml --profile build build
+docker compose -f deploy/compose.yaml up -d
+
+# submit a file and get a verdict back
+curl -s -F "file=@/path/to/sample" http://localhost:8080/v1/submissions
+# -> {"submission_id":"sub-...","sha256":"...","status":"accepted"}
+
+curl -s http://localhost:8080/v1/submissions/sub-xxxxxxxx | jq
 ```
- #####  ####   ##### #   #    #   #  #####  #      #      #####  ####
- #   #  #   #  #     ##  #    ## ##  #   #  #      #      #   #  #   #
- #   #  ####   ####  # # #    # # #  #####  #      #      #####  ####
- #   #  #      #     #  ##    #   #  #   #  #      #      #   #  #   #
- #####  #      ##### #   #    #   #  #   #  #####  #####  #   #  ####
 
-              [ Open Mal Lab ]
+A real round-trip, from the end-to-end proof (`deploy/proof/e2e.sh`):
 
-           open source, air-gap-first malware analysis
-              built containment-first, from commit one
+```jsonc
+{
+  "verdict": "MALICIOUS",
+  "score": 95,
+  "confidence": "HIGH",
+  "file_type": "php",
+  "findings": [
+    { "engine": "mal-ident",       "type": "file-type", "detail": "php",                            "verdict": "UNKNOWN" },
+    { "engine": "mal-static-yara", "type": "yara",      "detail": "webshell_php_eval_superglobal", "verdict": "MALICIOUS", "attck": "T1505.003", "confidence": "HIGH" }
+  ]
+}
 ```
 
-OpenMalLab takes a suspicious file and tells you what it really is, with the evidence to back every word, without ever letting the file touch anything it shouldn't. It runs fully offline, it is self-hostable, and it is built so that the malware you are studying can never reach out of the box you put it in.
-
-Most of what you need to analyze malware already exists. The problem is it lives in thirty different tools, half of them cloud-only and priced for enterprises, the other half single-purpose open source projects you have to stitch together yourself. Nobody has put deep static analysis, config extraction, and an explainable verdict into one self-hostable product that you can actually run in an air-gapped lab with a containment story you would stake your network on. That is what we are building.
-
-> Status: pre-M0, scaffolding. The design is done and frozen. We are starting to build. This README is the plan.
+Submit a zip that hides EICAR two directories deep and it comes back `MALICIOUS` with the breadcrumb `payloads/inner/eicar.com`. Submit a benign text file and it comes back `UNKNOWN`, score `0`, because nothing has earned the right to call it clean.
 
 ---
 
-## What ships first (Phase 1, the static wedge)
+## How it works
 
-No detonation, no AI, no network egress. That is a deliberate choice, not a limitation. Those three are the hardest things to get right and the easiest to get wrong, so we ship a complete, useful product without them first, and add them once there is a team to run them safely.
+A submission is walked as a tree, breadth-first, under hard depth and count caps. Each artifact is identified, scanned, and unpacked in parallel jails; executables also get capability analysis. Nothing an engine emits is trusted until a jailed broker has validated it, and the whole thing rolls up on a fail-closed lattice.
 
-Here is the whole Phase 1 flow:
+```mermaid
+flowchart LR
+  A([analyst]) -- submit --> GW[mal-gateway]
+  GW -- content-address --> V[(vault)]
+  GW -- start workflow --> OR[mal-orchestrator<br/>Temporal]
 
-```
-  you submit a file
-         |
-         v
-  +---------------------------------------------------------------+
-  |  CONTROL PLANE   (trusted, never parses raw hostile bytes)    |
-  |                                                               |
-  |    gateway  ---->  orchestrator (Temporal)  ---->  broker     |
-  |    auth, audit     workflows, caps, verdict      decodes      |
-  +---------------------------------------------------------------+
-        |  dispatch                          ^  results come back as a
-        v                                    |  bounded schema over a unix
-  +--------------------------------+         |  socket, decoded inside an
-  |  DATA PLANE                    |---------+  unprivileged sandbox, never
-  |  single-use workers            |            in a trusted process
-  |  no credentials                |
-  |  empty network namespace       |
-  |  capa  FLOSS  DIE  YARA-X  MACO |
-  +--------------------------------+
+  subgraph JAIL [single-use jails: no network, no caps, read-only, non-root]
+    ID[mal-ident<br/>Magika]
+    YA[mal-static-yara<br/>YARA-X]
+    EX[mal-extract<br/>recursive unpack]
+    CA[mal-capa<br/>capa capabilities]
+  end
 
-  Phase 2 adds a DETONATION PLANE that is physically dead-ended:
-  its own kernel, its own network, no route or credentials back to control.
+  OR -- one file, read-only --> ID & YA & EX & CA
+  ID & YA & EX & CA -- raw bytes --> BR[mal-broker<br/>validate under caps]
+  BR -- validated only --> OR
+  EX -- children --> OR
+  OR -- fail-closed lattice<br/>+ confidence + score --> GW
+  GW --> CON([analyst console])
 ```
 
-1. Submit a file through the API.
-2. Identify what it actually is with Magika, never trusting the extension.
-3. Recursively unpack it inside a sandbox (archives, embedded objects, dropped payloads), with hard limits so a zip bomb or a traversal trick goes nowhere.
-4. Run the static engines: capa for capabilities mapped to ATT&CK, FLOSS for hidden strings, DIE for packer and format fingerprinting, YARA-X for rules.
-5. Pull the config and family out with MACO-normalized extraction. This is the part that makes it worth switching to.
-6. Roll everything up into a deterministic verdict where every single point links back to the finding, the engine, and the ATT&CK technique that earned it.
-7. Land it in a score-driven triage queue with an evidence tree you can actually read.
+1. **Identify** what the file actually is with Magika, never trusting the extension.
+2. **Scan** it with YARA-X against a curated, self-describing rule pack.
+3. **Unpack** it recursively (zip, tar, gzip), with streaming caps so a decompression bomb stops cold and a Zip Slip goes nowhere, then re-submit every child through the whole pipeline.
+4. **Characterize** executables with capa, mapping behavior to MITRE ATT&CK and MBC.
+5. **Validate** every engine's raw output inside a jailed broker before a single byte reaches a trusted decoder.
+6. **Roll up** a deterministic verdict on the lattice, with an orthogonal confidence and a 0-100 triage score, every point tracing to its evidence.
 
 ---
 
-## Why it is different
+## The containment model
 
-- **Air-gap-first, not air-gap-eventually.** The whole pipeline runs with zero internet. Every external call is opt-in and audited, never a dependency. Uploading a sample to a cloud service tips off the adversary and leaks your data, so we just do not.
-- **Containment is the product, not a setting.** Every worker that touches hostile bytes is single-use, holds no credentials, and lives in an empty network namespace with no interfaces at all. The file arrives as a read-only mounted fd. Results leave as a bounded schema over a unix socket and get parsed by an unprivileged sandboxed sub-process, never by a trusted one.
-- **Fail closed, always.** No input ever comes back clean just because analysis got interrupted, truncated, or capped. Unknown is not benign. A crash raises suspicion, it does not lower it.
-- **Explainable by construction.** There are no black-box scores. Every point in a verdict cites at least one piece of evidence. If we cannot show you why, we do not claim it.
-- **One platform, not thirty.** Deep static analysis, config extraction, and case-ready verdicts in a single self-hostable thing, on hardware you control.
+This is a tool that eats hostile input for a living, so its own security is the first feature, not the last. The jail below is enforced by the orchestrator on every engine and pinned, field by field, to a live boundary proof (`deploy/proof/boundary-proof.sh`) that runs in CI.
 
----
+| Control | What it means |
+|---|---|
+| `--network none` | No interface but loopback, no routes. Network access is impossible, not merely blocked. |
+| `--cap-drop ALL` + `no-new-privileges` | Zero Linux capabilities, no privilege escalation. |
+| `--read-only` root + `noexec` scratch | The worker cannot write its root or execute anything it drops in scratch. |
+| non-root (`65534`) | Nothing runs as root inside the jail. |
+| one file, read-only | The sample is the only thing mounted, addressed by its sha256. |
+| the broker | Raw engine output is validated (one document, known fields, hard caps) inside its own jail before any trusted process decodes it. |
+| fail closed | A crash, timeout, cap, or malformed result floors the node to SUSPICIOUS and flags it incomplete, never clean. |
+| re-hash on ingest | Extracted children are re-hashed by the trusted side; a worker can never smuggle bytes under a hash they do not match. |
 
-## Architecture
-
-Three strongly isolated planes. A control plane that is trusted and never runs or parses raw hostile bytes in a privileged process. A data plane that parses hostile bytes but cannot execute them and cannot reach the network. And, in Phase 2, a detonation plane that actually runs malware and is dead-ended so that a full escape reaches nothing.
-
-![System planes and trust architecture](docs/diagrams/render/01-system-planes.png)
-
-The rule we hold ourselves to: if a path is not drawn, it is not reachable. The diagrams are the spec, and there are conformance tests that fail the build if the running system grows an edge the diagrams do not show.
-
-Full, rendered, audited diagrams live in [docs/diagrams/](docs/diagrams/):
-
-| Diagram | What it shows |
-|---------|---------------|
-| [System planes](docs/diagrams/render/01-system-planes.svg) | The master map and every legitimate crossing |
-| [Trust boundaries](docs/diagrams/render/02-trust-boundaries.svg) | All eight boundaries with STRIDE threats and controls |
-| [Detonation dead-end](docs/diagrams/render/03-detonation-deadend.svg) | Phase-2 containment and the management plane |
-| [Result pump](docs/diagrams/render/04-result-pump-pipeline.svg) | The two-process, write-only result path |
-| [Sample lifecycle](docs/diagrams/render/05-dataflow-lifecycle.svg) | End to end, with a fail-closed gate at every step |
-| [Verdict aggregation](docs/diagrams/render/06-dag-aggregation.svg) | Why no input can turn a malicious sample clean |
-| [AI quarantine](docs/diagrams/render/07-ai-quarantine.svg) | The Phase-2 dual-LLM design |
-| [Deployment tiers](docs/diagrams/render/08-deployment-tiers.svg) | Solo, team, enterprise, and where containment holds |
-| [Licensing isolation](docs/diagrams/render/09-licensing-isolation.svg) | How the Apache core stays clean |
-| [Phase-1 components](docs/diagrams/render/10-phase1-components.svg) | The buildable static wedge |
-| [Supply chain](docs/diagrams/render/11-supply-chain-offline.svg) | Offline builds, signing, revocation |
+The full threat model (STRIDE per boundary, attack trees, and an honest residual-risk register) is in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md). The design survived three rounds of adversarial review; the findings and dispositions are in [docs/ARCHITECTURE-REVIEW.md](docs/ARCHITECTURE-REVIEW.md).
 
 ---
 
-## The security model
+## The engines
 
-This is a tool that eats hostile input for a living, so its own security is the first feature, not the last.
+Each engine is a best-of-breed open tool, wrapped as a jailed worker that speaks one bounded contract. We integrate; we do not reimplement.
 
-- **Single-use workers.** One artifact per worker, then it dies. A worker compromised by one sample never sees another.
-- **No credentials in the blast radius.** Workers hold no store credentials. All persistence is brokered by the orchestrator. A worker that gets popped cannot write to the vault, the database, or anything else.
-- **Empty network namespace.** Not a firewall rule, not a filtered egress. The worker has no network interface at all, not even loopback. Network access is impossible, not merely blocked.
-- **A bounded boundary, parsed safely.** Results cross as a flat, size-capped, allow-listed schema. No arbitrary object deserialization. The orchestrator-side broker decodes it in an unprivileged, seccomp-strict, network-dead sub-process before anything trusted sees a byte.
-- **Fail closed everywhere.** Crash, timeout, truncation, cap hit, or a malformed result all floor the outcome to suspicious or unknown, never clean.
-- **Tamper-evident audit.** The audit log is hash-chained and mirrored to write-once storage, so a privileged insider cannot quietly rewrite history.
+| Engine | Tool | Does | License | Status |
+|---|---|---|---|---|
+| `mal-ident` | [Magika](https://github.com/google/magika) (Google) | Content-based file identification, never the extension | Apache-2.0 | Live |
+| `mal-static-yara` | [YARA-X](https://github.com/VirusTotal/yara-x) (VirusTotal) | Signatures via a curated, self-describing rule pack | BSD-3 | Live |
+| `mal-extract` | pure-Rust `zip` / `tar` / `flate2` | Recursive, bomb-safe, Zip-Slip-proof unpacking | MIT / Apache-2.0 | Live |
+| `mal-capa` | [capa](https://github.com/mandiant/capa) (Mandiant) | ATT&CK / MBC capability detection (vivisect backend) | Apache-2.0 | Live |
+| `mal-static-die` | [Detect It Easy](https://github.com/horsicq/Detect-It-Easy) | Packer / compiler / crypto fingerprinting | MIT | Next |
+| `mal-static-floss` | [FLOSS](https://github.com/mandiant/flare-floss) (Mandiant) | Deobfuscated and decoded strings | Apache-2.0 | Next |
+| config extraction | [MACO](https://github.com/CybercentreCanada/maco) + configextractor-py | Normalized family config / C2 extraction | MIT | Planned |
 
-The full threat model, with STRIDE per boundary and attack trees, is in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md). The design was put through three rounds of adversarial review, including an eight-lens one that tried hard to break it; the findings and how each was handled are in [docs/ARCHITECTURE-REVIEW.md](docs/ARCHITECTURE-REVIEW.md). We do not claim it is bulletproof. We claim there is no silent path, every residual risk is named and owned, and the big claims are gated behind an external pen test before we make them.
+Rules and models are vendored into each image and pinned by hash, so the image digest pins the exact detection content and nothing is fetched at run time. Operators drop their own rule packs into a documented slot for offline builds.
 
 ---
 
-## The AI layer (Phase 2)
+## The analyst console
 
-AI here assists, it never decides. When it lands, it is built so that a prompt-injection buried in a sample cannot turn it into an exfiltration tool or a false verdict.
-
-- A quarantined model reads the hostile content and returns only schema-constrained values. A separate privileged planner drives tools but works from those constrained values.
-- The planner's authority is deliberately smaller than a human's. No cross-case, cross-tenant, global, or egress tools in any context that has touched sample bytes. That is what actually caps the blast radius.
-- Local-first by default so samples never leave. Any cloud call is a logged, two-person, out-of-band action, and it is impossible at all in air-gap mode.
-- The AI output is never a field in the scored verdict. Deterministic engines alone produce the verdict. The AI writes advisory notes next to the evidence, clearly labeled.
-
-Design detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (ADR-010) and [docs/diagrams/render/07-ai-quarantine.svg](docs/diagrams/render/07-ai-quarantine.svg).
+A dark, forensic, read-only triage front end: a severity-striped queue ranked by verdict then score, and a detail pane with a circular score gauge over the recursive evidence tree (breadcrumb paths, findings grouped by engine, ATT&CK chips). It is fully self-contained and air-gap-clean (no external fonts, scripts, or calls), theme-aware, and every specimen-derived string is inert-rendered and defanged, because the console is itself a hostile-content surface. Source in [`services/mal-web/`](services/mal-web/).
 
 ---
 
@@ -127,15 +171,18 @@ Design detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (ADR-010) and [doc
 
 We build in phases, and each phase is a real product on its own.
 
-**Phase 1, the static wedge (now).** Ingest, identify, recursive sandboxed unpack, the static engines, MACO config extraction, a deterministic explainable verdict, and a triage queue. Single node, single tenant, fully offline. This is what we are building first.
+**Phase 1, the static wedge (now, and largely running).** Ingest, content-based identification, recursive sandboxed unpacking, the static engines, a deterministic and explainable verdict with a confidence-weighted triage score, and the analyst console. Single node, single tenant, fully offline.
+
+- Done and running: the containment model, the broker, the fail-closed lattice, Magika, YARA-X with real rules, recursive extraction, capa, the confidence and score axis, the read-only console.
+- Next in Phase 1: DIE and FLOSS, MACO config extraction, real vault crypto and WORM audit, OIDC and policy, persistence and the live queue API.
 
 **Phase 1.5.** Ghidra as a crash-isolated service, full Volatility memory forensics, an interactive analyst view, full-text search at scale, and the first quarantined local-AI extraction.
 
-**Phase 2.** The detonation plane: multi-tier, anti-evasion, physically dead-ended. Hunting and retrohunt over your own corpus, code-reuse attribution, the threat-intel graph, case management, the guardrailed AI assistant, and hard multi-tenancy.
+**Phase 2.** The detonation plane: multi-tier, anti-evasion, and physically dead-ended so a full escape reaches nothing. Hunting and retrohunt over your own corpus, code-reuse attribution, a threat-intel graph, case management, a guardrailed AI assistant, and hard multi-tenancy.
 
-**Phase 3.** The frontier stuff: sound LLM-plus-IR script deobfuscation, a generic unpacker, symbolic execution, a STIX knowledge graph, and a natural-language investigation agent scoped tightly to a single case.
+**Phase 3.** The frontier: sound LLM-plus-IR script deobfuscation, a generic unpacker, symbolic execution, a STIX knowledge graph, and a natural-language investigation agent scoped tightly to one case.
 
-The reasoning behind the cut (why detonation is Phase 2 and not Phase 1, why the static wedge is the right first product) is in [docs/DECISION-LOG.md](docs/DECISION-LOG.md).
+Why detonation is Phase 2 and not Phase 1, and why the static wedge is the right first product, is in [docs/DECISION-LOG.md](docs/DECISION-LOG.md).
 
 ---
 
@@ -143,11 +190,10 @@ The reasoning behind the cut (why detonation is Phase 2 and not Phase 1, why the
 
 Chosen for correctness, offline operability, and a permissive-license core.
 
-- **Orchestration:** Temporal for durable workflows, retries, timeouts, and safe recursion. It does the genuinely hard distributed-systems work so we do not hand-roll it.
-- **Languages:** Rust at the hostile-input boundary (identification, extraction), Go for the control plane, Python for the analysis engines, TypeScript and React for the UI.
-- **Engines:** Magika, capa, FLOSS, DIE, YARA-X, and MACO with configextractor-py, all wrapped as libraries, all permissively licensed.
-- **State (kept deliberately small):** PostgreSQL, Temporal, SeaweedFS for object storage, and OpenBao for secrets. No message-bus cluster, no vector or graph store, until a feature actually needs one.
-- **Crypto:** per-sample keys wrapped by a per-domain key, so key rotation is cheap and lawful erasure is actually possible.
+- **Orchestration:** Temporal for durable workflows, retries, timeouts, and safe recursion.
+- **Languages:** Rust at the hostile-input boundary (identification, extraction), Go for the control plane, Python for the heavier analysis engines, HTML/CSS/JS for the console.
+- **State, kept deliberately small:** PostgreSQL, Temporal, SeaweedFS for object storage, OpenBao for secrets.
+- **Isolation:** every engine is a jailed, single-use sibling container spawned per submission; the orchestrator is the only writer of the stores.
 
 ---
 
@@ -155,57 +201,37 @@ Chosen for correctness, offline operability, and a permissive-license core.
 
 ```
 services/
-  mal-gateway/       Go    submit API, OIDC, OPA, tamper-evident audit
-  mal-orchestrator/  Go    Temporal workflows, recursion caps, aggregation, the result broker
+  mal-gateway/       Go    submit + read API, content-addressed vault
+  mal-orchestrator/  Go    Temporal workflows, the jail spawner, recursion caps, aggregation
   mal-ident/         Rust  Magika file identification
-  mal-extract/       Rust  recursive path-safe unpack (wraps libarchive, 7z, unrar)
-  mal-static/        Py    capa, FLOSS, DIE, YARA-X, MACO config extraction
-  mal-web/           TS    triage queue, evidence tree, safe rendering
-proto/               the cross-boundary contracts (AnalyzeResult)
-deploy/              docker-compose for the minimum stateful set
-test/corpus/         the adversarial test corpus (synthetic, never live malware)
-docs/                the full, frozen design
+  mal-extract/       Rust  recursive, bomb-safe, path-safe unpacking
+  mal-static-yara/   Rust  YARA-X with a self-describing rule pack
+  mal-capa/          Py    capa capability detection (vivisect)
+  mal-broker/        Go    the trust-boundary validator
+  mal-web/           web   the read-only analyst console
+internal/pipeline/   the shared verdict lattice, confidence, and score
+deploy/              docker compose for the control node + the boundary and e2e proofs
+docs/                the full, frozen, reviewed design
 ```
 
 ---
 
-## Getting started
+## Design docs
 
-The build is just starting, so there is no one-command install yet. That is the first milestone (M0), and you can follow it in [docs/M0-FIRST-COMMIT.md](docs/M0-FIRST-COMMIT.md). The short version of how to run it, once M0 lands:
+Everything here is frozen and reviewed. This is the whole plan, written down.
 
-```
-git clone https://github.com/COLONAYUSH/OpenMalLab
-cd OpenMalLab
-docker compose -f deploy/compose.yaml up      # Postgres, Temporal, SeaweedFS, OpenBao
-# then submit a file and watch it round-trip to an explainable verdict
-```
-
-If you want to build against it now, start with the design docs below. They are the source of truth.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - the ADRs: the three-plane model, containment, orchestration, storage, licensing.
+- [docs/PHASE1-TECHNICAL-DESIGN.md](docs/PHASE1-TECHNICAL-DESIGN.md) - the buildable Phase 1: component contracts, fail-closed invariants, the adversarial corpus.
+- [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) - STRIDE per boundary, attack trees, residual-risk register.
+- [docs/ARCHITECTURE-REVIEW.md](docs/ARCHITECTURE-REVIEW.md) - the round-3 eight-lens adversarial review and every disposition.
+- [docs/DECISION-LOG.md](docs/DECISION-LOG.md) - the build decisions and why we cut Phase 1 the way we did.
+- [docs/diagrams/](docs/diagrams/) - the rendered system diagrams.
 
 ---
-
-## The full plan (design docs)
-
-Everything here is frozen and reviewed. This is the whole thing, written down.
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the 24 ADRs. The three-plane model, containment, orchestration, storage, licensing, plus the full audit trail.
-- [docs/PHASE1-TECHNICAL-DESIGN.md](docs/PHASE1-TECHNICAL-DESIGN.md): the buildable Phase 1. Component contracts, the fail-closed invariants, and the adversarial test corpus.
-- [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md): STRIDE per boundary, attack trees, and an honest residual-risk register.
-- [docs/ARCHITECTURE-REVIEW.md](docs/ARCHITECTURE-REVIEW.md): the round-3 eight-lens adversarial review and every disposition.
-- [docs/DECISION-LOG.md](docs/DECISION-LOG.md): the build decisions, including why we greenfield and why detonation is Phase 2.
-- [docs/M0-FIRST-COMMIT.md](docs/M0-FIRST-COMMIT.md): the start-here build spec.
-- [docs/LICENSING-BRIEF.md](docs/LICENSING-BRIEF.md): how the Apache core stays clean next to copyleft engines.
-- [docs/diagrams/](docs/diagrams/): all the rendered diagrams and how to rebuild them.
-
----
-
-## Status and how we work
-
-We build in the open, in phases, and we do not overclaim. If a capability is Phase 2, the README says Phase 2, and the competitive-sounding lines wait until they are true. The design earned its ambition through three review rounds; now it has to earn it by running in front of a real analyst. That is the next milestone, not another doc.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Sign your commits (DCO). The one rule that does not bend: build the hostile boundary first, and never weaken it.
+See [CONTRIBUTING.md](CONTRIBUTING.md). The one rule that does not bend: build the hostile boundary first, and never weaken it. Every change to the jail has to keep the boundary proof green.
 
 ## Security
 
@@ -214,3 +240,15 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md). Report privately, never a
 ## License
 
 Apache-2.0 for the core. Copyleft engines, when they arrive in later phases, run as process-isolated, separately-licensed components, never linked into the core. See [docs/LICENSING-BRIEF.md](docs/LICENSING-BRIEF.md).
+
+---
+
+## Star history
+
+<p align="center">
+  <a href="https://star-history.com/#COLONAYUSH/OpenMalLab&Date">
+    <img src="https://api.star-history.com/svg?repos=COLONAYUSH/OpenMalLab&type=Date" alt="Star history chart" width="620" />
+  </a>
+</p>
+
+<p align="center"><sub>Built in the open. Containment-first, from commit one.</sub></p>
