@@ -119,6 +119,13 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 			fold(item.Path, "mal-capa", capaF)
 		}
 
+		// string recovery, only for PE: FLOSS decodes PE and shellcode only, and
+		// its emulation is expensive, so we gate it on magika identifying a PE.
+		if isPE(identRep) {
+			flossF := workflow.ExecuteActivity(ctx, a.FlossActivity, artifact)
+			fold(item.Path, "mal-floss", flossF)
+		}
+
 		// unpack one level while within the depth cap, then enqueue children.
 		// extraction runs on every artifact within depth: we do not rely on any
 		// single identifier being right about whether something is a container.
@@ -154,9 +161,12 @@ func fileTypeOf(rep pipeline.EngineReport) string {
 	return ""
 }
 
-// executableTypes are the magika labels capa can actually analyze.
+// executableTypes are the magika labels capa can actually analyze. these are
+// magika's own content-type labels (pebin is its name for a PE, .NET included);
+// there is no "pe" or "dotnet" label. the group check below is the real safety
+// net, so a new executable label magika adds still reaches capa.
 var executableTypes = map[string]bool{
-	"pe": true, "elf": true, "macho": true, "dotnet": true, "coff": true,
+	"pebin": true, "elf": true, "macho": true, "coff": true,
 }
 
 // isExecutable decides whether capa should run, from magika's content-based
@@ -169,6 +179,18 @@ func isExecutable(ident pipeline.EngineReport) bool {
 			return true
 		}
 		if f.Type == "file-type-group" && f.Detail == "executable" {
+			return true
+		}
+	}
+	return false
+}
+
+// isPE decides whether FLOSS should run: FLOSS decodes PE (including .NET,
+// which is also a PE) only, so we gate on magika labelling the content a PE.
+// "pebin" is magika's own label for a PE Windows executable; there is no "pe".
+func isPE(ident pipeline.EngineReport) bool {
+	for _, f := range ident.Findings {
+		if f.Type == "file-type" && f.Detail == "pebin" {
 			return true
 		}
 	}

@@ -48,16 +48,21 @@ type Analyzer struct {
 	identImage   string
 	extractImage string
 	capaImage    string
+	flossImage   string
 	brokerImage  string
 	workerWall   time.Duration
 	identWall    time.Duration
 	extractWall  time.Duration
 	capaWall     time.Duration
+	flossWall    time.Duration
 	brokerWall   time.Duration
-	// capa is memory- and disk-hungry (vivisect); these raise its jail's caps
-	// above the tight default. the other engines never touch them.
-	capaMemBytes int64
-	capaScratch  string
+	// capa and floss are memory- and disk-hungry (both run vivisect emulation);
+	// these raise their jails' caps above the tight default. the light engines
+	// never touch them.
+	capaMemBytes  int64
+	capaScratch   string
+	flossMemBytes int64
+	flossScratch  string
 }
 
 // the sha is about to be spliced into an engine api mount spec; it gets
@@ -137,6 +142,28 @@ func (a *Analyzer) CapaActivity(ctx context.Context, in pipeline.SubmissionInput
 		env:          []string{"HOME=/scratch", "TMPDIR=/scratch"},
 		memoryBytes:  a.capaMemBytes,
 		scratchSize:  a.capaScratch,
+	}, in.SHA256)
+	if err != nil {
+		return pipeline.EngineReport{}, err
+	}
+	return mapReport(br), nil
+}
+
+// FlossActivity runs Mandiant FLOSS over the artifact, jailed. it recovers
+// static and, via vivisect emulation, stack/tight/decoded strings. the
+// workflow only dispatches it for PE samples (FLOSS decodes PE and shellcode
+// only). like capa it is memory-hungry and needs a writable HOME; the emulation
+// phase can be slow, so its wall clock is generous and a timeout floors the
+// node fail-closed at low confidence.
+func (a *Analyzer) FlossActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
+	br, err := a.runWorkerThroughBroker(ctx, jailSpec{
+		image:        a.flossImage,
+		mounts:       []mount.Mount{sampleMount(a.vaultVolume, in.SHA256)},
+		wallClock:    a.flossWall,
+		submissionID: in.SubmissionID,
+		env:          []string{"HOME=/scratch", "TMPDIR=/scratch"},
+		memoryBytes:  a.flossMemBytes,
+		scratchSize:  a.flossScratch,
 	}, in.SHA256)
 	if err != nil {
 		return pipeline.EngineReport{}, err

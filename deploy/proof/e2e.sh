@@ -60,7 +60,7 @@ await_verdict() { # id -> final json
 }
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"; if [ "${KEEP_UP:-0}" != "1" ]; then docker compose -f "$COMPOSE" stop gateway orchestrator >/dev/null 2>&1 || true; fi' EXIT
+trap 'rm -rf "$TMP"; docker rm -f malfloss-pe-build >/dev/null 2>&1 || true; if [ "${KEEP_UP:-0}" != "1" ]; then docker compose -f "$COMPOSE" stop gateway orchestrator >/dev/null 2>&1 || true; fi' EXIT
 
 # the canonical eicar test string, assembled from halves at runtime so the
 # contiguous signature never sits in this file.
@@ -160,9 +160,61 @@ print("  capa: %d capabilities, techniques %s" % (len(caps), attcks))
 ' || fail "capa analysis wrong: $BODY4"
 say "executable -> capa surfaced ATT&CK-mapped capabilities, jailed and brokered."
 
+# a real PE for FLOSS string recovery. FLOSS decodes PE only, so an ELF will
+# not do; we cross-compile a tiny one with mingw at test time rather than
+# commit a Windows binary. strings are embedded so static recovery has signal.
+# built inside a throwaway amd64 container, then copied out (nothing committed).
+say "cross-compiling a tiny PE for FLOSS string recovery (mingw, amd64)"
+PESRC='int puts(const char*);
+static const char *probe = "openmallab-floss-probe alpha bravo charlie delta echo";
+int main(void){ puts(probe); return 0; }'
+PEB64=$(printf '%s' "$PESRC" | base64 | tr -d '\n')
+docker rm -f malfloss-pe-build >/dev/null 2>&1 || true
+docker run --name malfloss-pe-build --platform linux/amd64 debian:12 sh -c "
+  set -e
+  apt-get update -qq
+  apt-get install -y -qq gcc-mingw-w64-x86-64 >/dev/null
+  printf '%s' '$PEB64' | base64 -d > /t.c
+  x86_64-w64-mingw32-gcc /t.c -o /hello.exe -s
+" >/dev/null 2>&1 || fail "could not cross-compile the PE sample (mingw)"
+docker cp malfloss-pe-build:/hello.exe "$TMP/hello.exe" >/dev/null 2>&1
+docker rm malfloss-pe-build >/dev/null 2>&1
+[ -s "$TMP/hello.exe" ] || fail "could not stage the PE FLOSS sample"
+
+say "submitting a PE; FLOSS should recover strings and magika should call it pebin"
+ID5=$(submit "$TMP/hello.exe")
+BODY5=$(await_verdict "$ID5")
+echo "$BODY5" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+# magika calls a PE "pebin" (its own label; there is no "pe"). the FLOSS gate
+# keys on exactly this, and regressed once by checking a label magika never emits.
+assert d["file_type"] == "pebin", "PE not identified as pebin: %s" % d["file_type"]
+# every engine completed. this guards the capa-on-PE regression: capa needs
+# FLIRT signatures to analyze a PE and used to fail closed (SUSPICIOUS+incomplete)
+# on every PE because none were vendored. a clean, complete PE run proves the fix.
+assert d["incomplete"] is False, "PE run came back incomplete (an engine failed): %s" % d["findings"]
+floss = [x for x in d["findings"] if x["engine"] == "mal-floss"]
+assert floss, "FLOSS did not run on the PE: %s" % sorted(set(f["engine"] for f in d["findings"]))
+summ = [x for x in floss if x["type"] == "floss-summary"]
+assert summ, "FLOSS produced no summary: %s" % floss
+# FLOSS evidence is strings, never a verdict: everything it emits stays UNKNOWN.
+assert all(x["verdict"] == "UNKNOWN" for x in floss), "FLOSS emitted a non-UNKNOWN verdict: %s" % floss
+# a PE is also an executable, so capa analyzed it too: it must surface real
+# capabilities (not just an error finding), which only works with the sigs.
+caps = [x for x in d["findings"] if x["engine"] == "mal-capa" and x["type"] == "capability"]
+assert caps, "capa surfaced no capabilities on the PE (sigs missing?): %s" % [x for x in d["findings"] if x["engine"] == "mal-capa"]
+attcks = sorted({x["attck"] for x in caps if x.get("attck")})
+assert attcks, "capa PE capabilities carry no ATT&CK/MBC ids: %s" % caps
+print("  floss: %s" % summ[0]["detail"])
+print("  capa:  %d capabilities on the PE, techniques %s" % (len(caps), attcks))
+' || fail "FLOSS/capa PE analysis wrong: $BODY5"
+say "PE -> FLOSS recovered strings (UNKNOWN evidence) and capa surfaced capabilities, complete, jailed, brokered."
+
 echo ""
 echo "E2E PROOF PASSED"
 echo "  eicar:      $ID -> MALICIOUS (yara: eicar_test_file, T1204; magika: $FT)"
 echo "  benign:     $ID2 -> UNKNOWN (magika: $FT2)"
 echo "  nested zip: $ID3 -> MALICIOUS (recursive extract found the buried eicar)"
 echo "  executable: $ID4 -> capa surfaced ATT&CK-mapped capabilities"
+echo "  pe:         $ID5 -> FLOSS strings + capa capabilities, complete (magika: pebin)"

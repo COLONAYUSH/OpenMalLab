@@ -71,23 +71,27 @@ func main() {
 	}
 
 	a := &Analyzer{
-		docker:       docker,
-		vaultVolume:  envOr("MAL_VAULT_VOLUME", "openmallab-vault"),
-		vaultPath:    envOr("MAL_VAULT_DIR", "/vault"),
-		stagingPath:  envOr("MAL_EXTRACT_STAGING_DIR", "/staging"),
-		stagingVol:   envOr("MAL_EXTRACT_STAGING_VOLUME", "openmallab-extract-staging"),
-		workerImage:  envOr("MAL_WORKER_IMAGE", "openmallab/mal-static-yara:m0"),
-		identImage:   envOr("MAL_IDENT_IMAGE", "openmallab/mal-ident:m0"),
-		extractImage: envOr("MAL_EXTRACT_IMAGE", "openmallab/mal-extract:m0"),
-		capaImage:    envOr("MAL_CAPA_IMAGE", "openmallab/mal-capa:m0"),
-		brokerImage:  envOr("MAL_BROKER_IMAGE", "openmallab/mal-broker:m0"),
-		workerWall:   envDurOr("MAL_WORKER_WALL_CLOCK", 60*time.Second),
-		identWall:    envDurOr("MAL_IDENT_WALL_CLOCK", 30*time.Second),
-		extractWall:  envDurOr("MAL_EXTRACT_WALL_CLOCK", 60*time.Second),
-		capaWall:     envDurOr("MAL_CAPA_WALL_CLOCK", 300*time.Second),
-		brokerWall:   envDurOr("MAL_BROKER_WALL_CLOCK", 30*time.Second),
-		capaMemBytes: envInt64Or("MAL_CAPA_MEMORY_BYTES", 2<<30), // 2 GiB; vivisect is hungry
-		capaScratch:  envOr("MAL_CAPA_SCRATCH", "256m"),
+		docker:        docker,
+		vaultVolume:   envOr("MAL_VAULT_VOLUME", "openmallab-vault"),
+		vaultPath:     envOr("MAL_VAULT_DIR", "/vault"),
+		stagingPath:   envOr("MAL_EXTRACT_STAGING_DIR", "/staging"),
+		stagingVol:    envOr("MAL_EXTRACT_STAGING_VOLUME", "openmallab-extract-staging"),
+		workerImage:   envOr("MAL_WORKER_IMAGE", "openmallab/mal-static-yara:m0"),
+		identImage:    envOr("MAL_IDENT_IMAGE", "openmallab/mal-ident:m0"),
+		extractImage:  envOr("MAL_EXTRACT_IMAGE", "openmallab/mal-extract:m0"),
+		capaImage:     envOr("MAL_CAPA_IMAGE", "openmallab/mal-capa:m0"),
+		flossImage:    envOr("MAL_FLOSS_IMAGE", "openmallab/mal-floss:m0"),
+		brokerImage:   envOr("MAL_BROKER_IMAGE", "openmallab/mal-broker:m0"),
+		workerWall:    envDurOr("MAL_WORKER_WALL_CLOCK", 60*time.Second),
+		identWall:     envDurOr("MAL_IDENT_WALL_CLOCK", 30*time.Second),
+		extractWall:   envDurOr("MAL_EXTRACT_WALL_CLOCK", 60*time.Second),
+		capaWall:      envDurOr("MAL_CAPA_WALL_CLOCK", 300*time.Second),
+		flossWall:     envDurOr("MAL_FLOSS_WALL_CLOCK", 360*time.Second), // static + emulation phases
+		brokerWall:    envDurOr("MAL_BROKER_WALL_CLOCK", 30*time.Second),
+		capaMemBytes:  envInt64Or("MAL_CAPA_MEMORY_BYTES", 2<<30), // 2 GiB; vivisect is hungry
+		capaScratch:   envOr("MAL_CAPA_SCRATCH", "256m"),
+		flossMemBytes: envInt64Or("MAL_FLOSS_MEMORY_BYTES", 2<<30),
+		flossScratch:  envOr("MAL_FLOSS_SCRATCH", "256m"),
 	}
 
 	// crash hygiene: jails are single-use and staging dirs are per-run; anything
@@ -106,8 +110,8 @@ func main() {
 	w.RegisterWorkflow(SubmissionWorkflow)
 	w.RegisterActivity(a)
 
-	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s capa=%s broker=%s)",
-		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.extractImage, a.capaImage, a.brokerImage)
+	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s capa=%s floss=%s broker=%s)",
+		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.extractImage, a.capaImage, a.flossImage, a.brokerImage)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker stopped: %v", err)
 	}

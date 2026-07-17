@@ -139,6 +139,7 @@ services:
       MAL_IDENT_IMAGE: openmallab/mal-ident:m0
       MAL_EXTRACT_IMAGE: openmallab/mal-extract:m0
       MAL_CAPA_IMAGE: openmallab/mal-capa:m0
+      MAL_FLOSS_IMAGE: openmallab/mal-floss:m0
       MAL_BROKER_IMAGE: openmallab/mal-broker:m0
     volumes:
       # the engine socket is the spawn authority in phase 1: the orchestrator
@@ -205,6 +206,15 @@ services:
       secrets:
         - pip_conf
     image: openmallab/mal-capa:m0
+
+  mal-floss:
+    profiles: [build]
+    build:
+      context: ..
+      dockerfile: services/mal-floss/Dockerfile
+      secrets:
+        - pip_conf
+    image: openmallab/mal-floss:m0
 
   mal-broker:
     profiles: [build]

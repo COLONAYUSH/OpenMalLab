@@ -15,6 +15,12 @@
 # AND rules and nothing is fetched at run time. capa uses its bundled vivisect
 # backend: no native disassembler, no Ghidra, arch-neutral.
 #
+# capa also needs FLIRT library signatures to analyze PE files: without them it
+# raises OSError on any PE ("default signature path doesn't exist") and every PE
+# fails closed to SUSPICIOUS. the pip package ships none, so we vendor the FLARE
+# signatures from the matching capa source release, pinned by sha256 like the
+# rules. ELF needs no signatures, which is why only PE was affected.
+#
 # The capa Python package is fetched at build time. On a network that proxies
 # PyPI through a private, credentialed index, pass that index as a BuildKit
 # secret (never an ARG or a layer): `--secret id=pip_conf,src=~/.pip/pip.conf`.
@@ -51,6 +57,21 @@ RUN set -eux; \
     rm -f /tmp/rules.tgz; \
     test -n "$(find /opt/capa/rules -name '*.yml' -print -quit)"
 
+# Vendor the matching FLIRT signatures, pinned by sha256. These live in the main
+# capa source release (not the rules repo), so we fetch that tarball and extract
+# only sigs/. Same urllib+CA approach as the rules. capa's -s points here so PE
+# analysis finds them; without this every PE fails closed.
+ARG CAPA_SRC_SHA=562edd9617b23286e74d06f0115d99217a4df178e43925375af0c35d5cae8d66
+RUN set -eux; \
+    url="https://github.com/mandiant/capa/archive/refs/tags/v${CAPA_VERSION}.tar.gz"; \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    python -c "import urllib.request,sys; urllib.request.urlretrieve(sys.argv[1], '/tmp/capa-src.tgz')" "$url"; \
+    echo "${CAPA_SRC_SHA}  /tmp/capa-src.tgz" | sha256sum -c -; \
+    mkdir -p /opt/capa/sigs; \
+    tar xzf /tmp/capa-src.tgz -C /opt/capa/sigs --strip-components=2 --wildcards "*/sigs/*"; \
+    rm -f /tmp/capa-src.tgz; \
+    test -n "$(find /opt/capa/sigs -name '*.sig' -print -quit)"
+
 FROM python:3.12-slim-bookworm
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build /opt/capa /opt/capa
@@ -59,8 +80,8 @@ COPY services/mal-capa/wrapper.py /wrapper.py
 # a rule cache and temp under HOME, and the rootfs is read-only in the jail.
 # The orchestrator also sets these on the jail spec; baking them keeps direct
 # runs working too.
-ENV PATH="/opt/venv/bin:$PATH" MAL_CAPA_RULES=/opt/capa/rules MAL_CAPA_BIN=/opt/venv/bin/capa \
-    HOME=/scratch TMPDIR=/scratch
+ENV PATH="/opt/venv/bin:$PATH" MAL_CAPA_RULES=/opt/capa/rules MAL_CAPA_SIGS=/opt/capa/sigs \
+    MAL_CAPA_BIN=/opt/venv/bin/capa HOME=/scratch TMPDIR=/scratch
 # verify the capability-mapping logic at build time (fails the build if broken).
 RUN HOME=/tmp /opt/venv/bin/python /wrapper.py --selftest
 USER 65534:65534

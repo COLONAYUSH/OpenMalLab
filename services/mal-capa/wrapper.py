@@ -24,6 +24,9 @@ import subprocess
 import sys
 
 RULES = os.environ.get("MAL_CAPA_RULES", "/opt/capa/rules")
+# FLIRT signatures. capa needs these to analyze PE (it raises OSError without
+# them); ELF does not. vendored into the image next to the rules.
+SIGS = os.environ.get("MAL_CAPA_SIGS", "/opt/capa/sigs")
 CAPA = os.environ.get("MAL_CAPA_BIN", "/opt/venv/bin/capa")
 # leave headroom under the jail wall clock so we report a clean timeout instead
 # of being killed mid-write.
@@ -174,7 +177,7 @@ def main():
     sample = sys.argv[1] if len(sys.argv) > 1 else "/in/sample"
     try:
         proc = subprocess.run(
-            [CAPA, "-q", "-j", "-r", RULES, sample],
+            [CAPA, "-q", "-j", "-r", RULES, "-s", SIGS, sample],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=TIMEOUT,
