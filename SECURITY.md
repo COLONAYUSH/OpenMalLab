@@ -21,3 +21,13 @@ The most safety-critical properties are: the credential-less / empty-netns worke
 bounded-schema result boundary and its sub-process broker, and the fail-closed verdict fabric
 (see the security-critical cores and invariants in `docs/PHASE1-TECHNICAL-DESIGN.md`, and `docs/THREAT-MODEL.md`).
 Findings against these are highest priority.
+
+## Dependency and supply chain
+Every push runs `govulncheck` over the whole Go module in CI (`deploy/security/vulncheck.sh`).
+It fails the build on any vulnerability reachable from our code, except a small set of advisories
+accepted in `deploy/security/govulncheck-allow.txt`. An advisory is accepted only when it is
+unfixed upstream **and** outside our threat model, and every entry carries a dated reason. When an
+upstream fix lands we bump the dependency and drop the entry; the gate warns if an accepted entry
+is no longer reachable. The current set is the Moby SDK daemon advisories that only the trusted
+orchestrator could ever reach (no jail has a docker socket or a network), with the per-advisory
+reasoning written out in that file.

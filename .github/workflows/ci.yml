@@ -41,6 +41,21 @@ jobs:
       - name: fuzz the broker decode
         run: go test -fuzz=FuzzValidate -fuzztime=60s ./services/mal-broker/
 
+  vuln:
+    # supply-chain gate: govulncheck over the whole Go module. fails on any
+    # vulnerability reachable from our code that is not explicitly accepted in
+    # deploy/security/govulncheck-allow.txt (unfixed upstream AND outside our
+    # threat model, each with a dated reason). new findings, or accepted ones
+    # that gain an upstream fix, turn this red.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: go vulnerability gate
+        run: deploy/security/vulncheck.sh
+
   rust:
     # the workers that parse hostile bytes: build and test the workspace.
     runs-on: ubuntu-latest
