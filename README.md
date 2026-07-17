@@ -1,9 +1,6 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/openmallab-logo.png" />
-  <img src="docs/brand/openmallab-logo-alt.png" alt="OpenMalLab" width="300" />
-</picture>
+<img src="docs/brand/openmallab-logo-alt.png" alt="OpenMalLab" width="300" />
 
 # OpenMalLab
 
