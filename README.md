@@ -284,13 +284,15 @@ OpenMalLab stands on the work of the teams behind [Magika](https://github.com/go
 
 <div align="center">
 
-### Star history
+### Activity
 
-<a href="https://star-history.com/#colonayush/openmallab&Date">
-  <img src="https://api.star-history.com/svg?repos=colonayush/openmallab&type=Date" alt="Star history chart" width="620" />
-</a>
+<p>
+  <a href="https://github.com/COLONAYUSH/OpenMalLab/stargazers"><img src="https://img.shields.io/github/stars/COLONAYUSH/OpenMalLab?style=flat-square&logo=github&label=stars&labelColor=0b0d12&color=ffb444" alt="Stars" /></a>
+  <a href="https://github.com/COLONAYUSH/OpenMalLab/network/members"><img src="https://img.shields.io/github/forks/COLONAYUSH/OpenMalLab?style=flat-square&logo=github&label=forks&labelColor=0b0d12&color=8b93a7" alt="Forks" /></a>
+  <a href="https://github.com/COLONAYUSH/OpenMalLab/watchers"><img src="https://img.shields.io/github/watchers/COLONAYUSH/OpenMalLab?style=flat-square&logo=github&label=watchers&labelColor=0b0d12&color=8b93a7" alt="Watchers" /></a>
+  <a href="https://star-history.com/#colonayush/openmallab&Date"><img src="https://img.shields.io/badge/star_history-view-3fb6c4?style=flat-square&labelColor=0b0d12" alt="Star history" /></a>
+</p>
 
-<br /><br />
 <sub>Built in the open. Containment-first, from commit one.</sub>
 
 </div>
