@@ -60,7 +60,7 @@ Most of what you need to analyze malware already exists. The problem is it lives
 ## Highlights
 
 - **Containment is the product, not a setting.** Every engine that touches hostile bytes runs as a single-use container with no network, no capabilities, a read-only root, a non-root user, and exactly one file mounted read-only.
-- **Best-of-breed engines, fused.** Magika for content-based identification, YARA-X for signatures, capa for ATT&CK-mapped capabilities, and a recursive archive unpacker, all behind one contract.
+- **Best-of-breed engines, fused.** Magika for content-based identification, YARA-X for signatures, capa for ATT&CK-mapped capabilities, FLOSS for string recovery, and a recursive archive unpacker, all behind one contract.
 - **Fail closed, always.** No file comes back clean because analysis got interrupted, capped, or crashed. Unknown is not benign. A crash raises suspicion, it never lowers it.
 - **A verdict you can rank and read.** Severity and confidence are separate axes, so a real signature hit outranks a crashed engine even though both are "suspicious." Every point of the score traces to the finding that earned it.
 - **Recursive by design.** A zip inside a zip inside an email is walked to the bottom, each artifact re-analyzed, every finding tagged with the breadcrumb path back to the root.
@@ -106,7 +106,7 @@ A real round-trip, from the end-to-end proof (`deploy/proof/e2e.sh`):
 
 ## How it works
 
-A submission is walked as a tree, breadth-first, under hard depth and count caps. Each artifact is identified, scanned, and unpacked in parallel jails; executables also get capability analysis. Nothing an engine emits is trusted until a jailed broker has validated it, and the whole thing rolls up on a fail-closed lattice.
+A submission is walked as a tree, breadth-first, under hard depth and count caps. Each artifact is identified, scanned, and unpacked in parallel jails; executables also get capability analysis, and PEs get string recovery. Nothing an engine emits is trusted until a jailed broker has validated it, and the whole thing rolls up on a fail-closed lattice.
 
 ```mermaid
 flowchart LR
@@ -120,10 +120,11 @@ flowchart LR
     YA[mal-static-yara<br/>YARA-X]
     EX[mal-extract<br/>recursive unpack]
     CA[mal-capa<br/>capa capabilities]
+    FL[mal-floss<br/>string recovery]
   end
 
-  OR -- one file, read-only --> ID & YA & EX & CA
-  ID & YA & EX & CA -- raw bytes --> BR[mal-broker<br/>validate under caps]
+  OR -- one file, read-only --> ID & YA & EX & CA & FL
+  ID & YA & EX & CA & FL -- raw bytes --> BR[mal-broker<br/>validate under caps]
   BR -- validated only --> OR
   EX -- children --> OR
   OR -- fail-closed lattice<br/>plus confidence plus score --> GW
@@ -134,8 +135,9 @@ flowchart LR
 2. **Scan** it with YARA-X against a curated, self-describing rule pack.
 3. **Unpack** it recursively, with streaming caps so a decompression bomb stops cold and a Zip Slip goes nowhere, then re-submit every child through the whole pipeline.
 4. **Characterize** executables with capa, mapping behavior to MITRE ATT&CK and MBC.
-5. **Validate** every engine's raw output inside a jailed broker before a single byte reaches a trusted decoder.
-6. **Roll up** a deterministic verdict on the lattice, with an orthogonal confidence and a 0-100 triage score, every point tracing to its evidence.
+5. **Recover** strings from PEs with FLOSS, including stack, tight, and emulation-decoded strings that a flat scan would miss.
+6. **Validate** every engine's raw output inside a jailed broker before a single byte reaches a trusted decoder.
+7. **Roll up** a deterministic verdict on the lattice, with an orthogonal confidence and a 0-100 triage score, every point tracing to its evidence.
 
 The platform is three strongly isolated planes. A trusted control plane that never parses raw hostile bytes in a privileged process, a data plane that parses hostile bytes but cannot execute them or reach the network, and (in Phase 2) a detonation plane that is physically dead-ended.
 
@@ -185,8 +187,8 @@ Each engine is a best-of-breed open tool, wrapped as a jailed worker that speaks
 | `mal-static-yara` | [YARA-X](https://github.com/VirusTotal/yara-x) (VirusTotal) | Signatures via a curated, self-describing rule pack | BSD-3 | Live |
 | `mal-extract` | pure-Rust `zip` / `tar` / `flate2` | Recursive, bomb-safe, Zip-Slip-proof unpacking | MIT / Apache-2.0 | Live |
 | `mal-capa` | [capa](https://github.com/mandiant/capa) (Mandiant) | ATT&CK / MBC capability detection | Apache-2.0 | Live |
+| `mal-floss` | [FLOSS](https://github.com/mandiant/flare-floss) (Mandiant) | Static, stack, tight, and emulation-decoded strings from PEs | Apache-2.0 | Live |
 | `mal-static-die` | [Detect It Easy](https://github.com/horsicq/Detect-It-Easy) | Packer / compiler / crypto fingerprinting | MIT | Next |
-| `mal-static-floss` | [FLOSS](https://github.com/mandiant/flare-floss) (Mandiant) | Deobfuscated and decoded strings | Apache-2.0 | Next |
 | config extraction | [MACO](https://github.com/CybercentreCanada/maco) + configextractor-py | Normalized family config / C2 extraction | MIT | Planned |
 
 Rules and models are vendored into each image and pinned by hash, so the image digest pins the exact detection content and nothing is fetched at run time. Operators drop their own rule packs into a documented slot for offline builds.
@@ -206,9 +208,10 @@ We build in phases, and each phase is a real product on its own.
 - [x] YARA-X with a real, self-describing rule pack
 - [x] Recursive, bomb-safe extraction
 - [x] capa ATT&CK / MBC capability detection
+- [x] FLOSS string recovery from PEs (static, stack, tight, emulation-decoded)
 - [x] Confidence axis and 0-100 triage score
 - [x] The read-only analyst console
-- [ ] DIE and FLOSS
+- [ ] DIE packer / compiler / crypto fingerprinting
 - [ ] MACO config / family extraction
 - [ ] Real vault crypto, WORM audit, OIDC, persistence, the live queue API
 
