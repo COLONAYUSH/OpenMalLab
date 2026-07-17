@@ -1,0 +1,740 @@
+<title>OpenMalLab Console</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  /* ---- tokens: cool, chosen neutrals; semantic severity is the only loud color ---- */
+  :root {
+    --ground: #0b0d12;
+    --surface: #12151d;
+    --surface-2: #161a23;
+    --surface-3: #1c212c;
+    --hairline: #252b38;
+    --hairline-soft: #1b202a;
+    --text: #e6e9f0;
+    --text-2: #9aa3b5;
+    --text-3: #667085;
+    --accent: #3fb6c4;
+    --accent-dim: #2c8b96;
+    --mal: #ff5c5c;
+    --sus: #ffb340;
+    --unk: #8b93a7;
+    --ben: #4ec98f;
+    --mal-bg: rgba(255, 92, 92, 0.12);
+    --sus-bg: rgba(255, 179, 64, 0.12);
+    --unk-bg: rgba(139, 147, 167, 0.12);
+    --ben-bg: rgba(78, 201, 143, 0.12);
+    --shadow: 0 1px 0 rgba(255, 255, 255, 0.02), 0 8px 30px rgba(0, 0, 0, 0.35);
+    --radius: 12px;
+    --radius-sm: 8px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", "Consolas", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground: #eef1f5;
+      --surface: #ffffff;
+      --surface-2: #f7f9fc;
+      --surface-3: #eef1f6;
+      --hairline: #dde3ec;
+      --hairline-soft: #e7ebf1;
+      --text: #141821;
+      --text-2: #56607a;
+      --text-3: #8a93a6;
+      --accent: #1c8a97;
+      --accent-dim: #56b3bd;
+      --mal: #e23a3a;
+      --sus: #c9810e;
+      --unk: #6b7385;
+      --ben: #1f9d63;
+      --mal-bg: rgba(226, 58, 58, 0.10);
+      --sus-bg: rgba(201, 129, 14, 0.12);
+      --unk-bg: rgba(107, 115, 133, 0.10);
+      --ben-bg: rgba(31, 157, 99, 0.10);
+      --shadow: 0 1px 2px rgba(20, 24, 33, 0.06), 0 10px 30px rgba(20, 24, 33, 0.08);
+    }
+  }
+  /* viewer toggle wins in both directions */
+  :root[data-theme="dark"] {
+    --ground: #0b0d12; --surface: #12151d; --surface-2: #161a23; --surface-3: #1c212c;
+    --hairline: #252b38; --hairline-soft: #1b202a; --text: #e6e9f0; --text-2: #9aa3b5;
+    --text-3: #667085; --accent: #3fb6c4; --accent-dim: #2c8b96;
+    --mal: #ff5c5c; --sus: #ffb340; --unk: #8b93a7; --ben: #4ec98f;
+    --mal-bg: rgba(255,92,92,.12); --sus-bg: rgba(255,179,64,.12); --unk-bg: rgba(139,147,167,.12); --ben-bg: rgba(78,201,143,.12);
+    --shadow: 0 1px 0 rgba(255,255,255,.02), 0 8px 30px rgba(0,0,0,.35);
+  }
+  :root[data-theme="light"] {
+    --ground: #eef1f5; --surface: #fff; --surface-2: #f7f9fc; --surface-3: #eef1f6;
+    --hairline: #dde3ec; --hairline-soft: #e7ebf1; --text: #141821; --text-2: #56607a;
+    --text-3: #8a93a6; --accent: #1c8a97; --accent-dim: #56b3bd;
+    --mal: #e23a3a; --sus: #c9810e; --unk: #6b7385; --ben: #1f9d63;
+    --mal-bg: rgba(226,58,58,.10); --sus-bg: rgba(201,129,14,.12); --unk-bg: rgba(107,115,133,.10); --ben-bg: rgba(31,157,99,.10);
+    --shadow: 0 1px 2px rgba(20,24,33,.06), 0 10px 30px rgba(20,24,33,.08);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection { background: var(--accent); color: #04161a; }
+
+  /* ---- app shell ---- */
+  .app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+
+  .topbar {
+    display: flex; align-items: center; gap: 16px;
+    padding: 0 20px; height: 56px;
+    border-bottom: 1px solid var(--hairline);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  }
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .brand svg { display: block; }
+  /* var() resolves in CSS, not in SVG presentation attributes, so color the mark here */
+  .brand .hex-outer { stroke: var(--accent); fill: rgba(63, 182, 196, 0.06); }
+  .brand .hex-inner { stroke: var(--accent-dim); fill: none; }
+  .brand .core { fill: var(--accent); }
+  .brand .name { font-weight: 650; letter-spacing: .2px; font-size: 15px; }
+  .brand .name b { color: var(--accent); font-weight: 650; }
+  .brand .kicker {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--text-3); padding-top: 2px;
+  }
+  .topbar .spacer { flex: 1; }
+  .live {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 11.5px; color: var(--text-2);
+    padding: 5px 11px; border: 1px solid var(--hairline); border-radius: 999px;
+    background: var(--surface-2);
+  }
+  .live .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 0 0 var(--accent); animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(63,182,196,.5); }
+    70% { box-shadow: 0 0 0 6px rgba(63,182,196,0); }
+    100% { box-shadow: 0 0 0 0 rgba(63,182,196,0); }
+  }
+  .icon-btn {
+    display: inline-grid; place-items: center; width: 34px; height: 34px;
+    border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+    background: var(--surface-2); color: var(--text-2); cursor: pointer;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .icon-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+
+  /* ---- two-pane body ---- */
+  .body { display: grid; grid-template-columns: 384px 1fr; overflow: hidden; }
+  @media (max-width: 900px) {
+    .body { grid-template-columns: 1fr; }
+    .detail { display: none; }
+    .body.show-detail .queue { display: none; }
+    .body.show-detail .detail { display: block; }
+  }
+
+  /* ---- queue ---- */
+  .queue { border-right: 1px solid var(--hairline); display: flex; flex-direction: column; min-height: 0; background: var(--surface); }
+  .queue-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 16px 18px 10px;
+  }
+  .queue-head h2 { margin: 0; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-3); font-weight: 600; }
+  .queue-head .count { font-family: var(--mono); font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .queue-list { overflow-y: auto; padding: 0 10px 14px; display: flex; flex-direction: column; gap: 4px; scrollbar-width: thin; }
+
+  .row {
+    position: relative; display: grid; grid-template-columns: 3px 40px 1fr auto; gap: 12px;
+    align-items: center; padding: 11px 12px 11px 0; border-radius: var(--radius-sm);
+    cursor: pointer; border: 1px solid transparent;
+    transition: background .13s, border-color .13s;
+  }
+  .row:hover { background: var(--surface-2); }
+  .row.sel { background: var(--surface-3); border-color: var(--hairline); }
+  .row .stripe { position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 3px; }
+  .row .gauge-mini { margin-left: 10px; }
+  .row .meta { min-width: 0; }
+  .row .fname { font-family: var(--mono); font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .sub { display: flex; align-items: center; gap: 8px; margin-top: 3px; font-size: 11.5px; color: var(--text-3); }
+  .row .sub .ftype { color: var(--text-2); }
+  .row .sub .d { width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: .5; flex: none; }
+  .row .right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; padding-right: 12px; }
+  .verdict-tag {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em; font-weight: 600;
+    padding: 3px 7px; border-radius: 5px; text-transform: uppercase;
+  }
+  .v-mal { color: var(--mal); background: var(--mal-bg); }
+  .v-sus { color: var(--sus); background: var(--sus-bg); }
+  .v-unk { color: var(--unk); background: var(--unk-bg); }
+  .v-ben { color: var(--ben); background: var(--ben-bg); }
+
+  .conf { display: inline-flex; gap: 3px; align-items: center; }
+  .conf i { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); opacity: .35; }
+  .conf i.on { opacity: 1; }
+  .conf.c-high i.on { background: var(--text); }
+  .conf.c-med i.on { background: var(--text-2); }
+  .conf.c-low i.on { background: var(--text-3); opacity: .8; }
+
+  /* ---- detail ---- */
+  .detail { overflow-y: auto; min-height: 0; scrollbar-width: thin; }
+  .detail-inner { max-width: 920px; margin: 0 auto; padding: 26px 30px 80px; }
+  .back-btn { display: none; }
+  @media (max-width: 900px) { .back-btn { display: inline-flex; margin-bottom: 14px; } }
+
+  .hero { display: grid; grid-template-columns: auto 1fr; gap: 26px; align-items: center; margin-bottom: 8px; }
+  .gauge-wrap { position: relative; width: 132px; height: 132px; }
+  .gauge-wrap .num {
+    position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
+  }
+  .gauge-wrap .num .score { font-family: var(--mono); font-size: 34px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+  .gauge-wrap .num .of { font-family: var(--mono); font-size: 10px; color: var(--text-3); letter-spacing: .12em; margin-top: 5px; }
+
+  .hero-info { min-width: 0; }
+  .hero-verdict { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .hero-verdict .big {
+    font-size: 27px; font-weight: 680; letter-spacing: -.3px; line-height: 1.1;
+  }
+  .m-mal { color: var(--mal); } .m-sus { color: var(--sus); } .m-unk { color: var(--unk); } .m-ben { color: var(--ben); }
+  .incomplete-tag {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--sus); border: 1px dashed var(--sus); border-radius: 5px; padding: 2px 7px;
+  }
+  .hero-sub { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--text-2); font-size: 13px; }
+  .hero-sub .k { color: var(--text-3); margin-right: 7px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+  .hero-sub .v { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  .hash { word-break: break-all; }
+
+  .conf-line { display: inline-flex; align-items: center; gap: 8px; }
+  .conf-line .label { font-family: var(--mono); font-size: 11px; color: var(--text-2); letter-spacing: .04em; }
+
+  .sectlabel {
+    font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--text-3);
+    font-weight: 600; margin: 34px 0 14px; display: flex; align-items: center; gap: 12px;
+  }
+  .sectlabel::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
+
+  /* ---- evidence tree ---- */
+  .artifact { border: 1px solid var(--hairline); border-radius: var(--radius); background: var(--surface); margin-bottom: 12px; overflow: hidden; box-shadow: var(--shadow); }
+  .artifact-head { display: flex; align-items: center; gap: 12px; padding: 13px 16px; cursor: pointer; user-select: none; }
+  .artifact-head:hover { background: var(--surface-2); }
+  .chev { color: var(--text-3); transition: transform .18s ease; flex: none; }
+  .artifact.open .chev { transform: rotate(90deg); }
+  .artifact-title { min-width: 0; flex: 1; }
+  .artifact-title .crumb { font-family: var(--mono); font-size: 12.5px; color: var(--text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .artifact-title .crumb .seg { color: var(--text); }
+  .artifact-title .crumb .sep { color: var(--text-3); }
+  .artifact-title .crumb .leaf { color: var(--accent); }
+  .artifact-title .sha { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); margin-top: 3px; }
+  .artifact-head .rollup { display: flex; align-items: center; gap: 8px; flex: none; }
+  .ftype-pill {
+    font-family: var(--mono); font-size: 10.5px; color: var(--text-2);
+    background: var(--surface-3); border: 1px solid var(--hairline); border-radius: 5px; padding: 2px 7px;
+  }
+  .artifact-body { border-top: 1px solid var(--hairline-soft); display: none; }
+  .artifact.open .artifact-body { display: block; }
+
+  .engine { border-top: 1px solid var(--hairline-soft); }
+  .engine:first-child { border-top: none; }
+  .engine-head {
+    display: flex; align-items: center; gap: 9px; padding: 9px 16px 5px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: .04em; color: var(--text-2);
+  }
+  .engine-head .eng-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-dim); }
+  .engine-head .eng-count { color: var(--text-3); }
+  .finding {
+    display: grid; grid-template-columns: 74px 1fr auto; gap: 12px; align-items: start;
+    padding: 8px 16px 8px 16px; border-top: 1px solid var(--hairline-soft);
+  }
+  .engine-head + .finding { border-top: none; }
+  .finding .ftag {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .05em; text-transform: uppercase;
+    padding: 3px 6px; border-radius: 4px; text-align: center; align-self: start; margin-top: 1px;
+  }
+  .finding .fdetail { font-family: var(--mono); font-size: 12.5px; color: var(--text); word-break: break-word; }
+  .finding .ftype-lbl { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+  .finding .attck {
+    font-family: var(--mono); font-size: 10.5px; color: var(--accent);
+    background: rgba(63,182,196,.08); border: 1px solid rgba(63,182,196,.22);
+    border-radius: 5px; padding: 2px 7px; white-space: nowrap; align-self: start; margin-top: 1px;
+  }
+  :root[data-theme="light"] .finding .attck, :root:not([data-theme]) .finding .attck { }
+
+  .empty { display: grid; place-content: center; height: 100%; text-align: center; color: var(--text-3); gap: 14px; padding: 40px; }
+  .empty svg { opacity: .5; margin: 0 auto; }
+  .empty .t { font-size: 15px; color: var(--text-2); }
+  .empty .s { font-size: 13px; max-width: 320px; }
+
+  .footnote { margin-top: 30px; font-size: 12px; color: var(--text-3); line-height: 1.6; border-top: 1px solid var(--hairline); padding-top: 16px; }
+  .footnote code { font-family: var(--mono); color: var(--text-2); font-size: 11.5px; }
+
+  .preview-banner {
+    font-family: var(--mono); font-size: 11px; color: var(--sus); background: var(--sus-bg);
+    border-bottom: 1px solid rgba(255,179,64,.25); padding: 6px 20px; text-align: center; letter-spacing: .03em;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+        <path class="hex-outer" d="M13 1.6 22.9 7.3v11.4L13 24.4 3.1 18.7V7.3L13 1.6Z" stroke-width="1.4"/>
+        <path class="hex-inner" d="M13 6.4 18.7 9.7v6.6L13 19.6 7.3 16.3V9.7L13 6.4Z" stroke-width="1"/>
+        <circle class="core" cx="13" cy="13" r="2.1"/>
+      </svg>
+      <div>
+        <div class="name">Open<b>Mal</b>Lab</div>
+        <div class="kicker">Analysis Console</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="live" id="live"><span class="dot"></span><span id="live-text">connecting</span></div>
+    <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+    </button>
+  </header>
+
+  <div class="body" id="body">
+    <aside class="queue">
+      <div class="queue-head">
+        <h2>Triage queue</h2>
+        <span class="count" id="qcount"></span>
+      </div>
+      <div class="queue-list" id="queue-list" role="listbox" aria-label="Submissions" tabindex="0"></div>
+    </aside>
+    <main class="detail" id="detail">
+      <div class="empty" id="detail-empty">
+        <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <div class="t">Select a submission</div>
+        <div class="s">Pick a specimen from the triage queue to see its verdict and the evidence behind it.</div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  "use strict";
+
+  /* ---------- severity model ---------- */
+  var RANK = { MALICIOUS: 3, SUSPICIOUS: 2, UNKNOWN: 1, BENIGN: 0 };
+  var VCLASS = { MALICIOUS: "mal", SUSPICIOUS: "sus", UNKNOWN: "unk", BENIGN: "ben" };
+  var VCOLOR = { MALICIOUS: "var(--mal)", SUSPICIOUS: "var(--sus)", UNKNOWN: "var(--unk)", BENIGN: "var(--ben)" };
+  var CONFN = { HIGH: 3, MEDIUM: 2, LOW: 1 };
+
+  /* ---------- inert rendering: sample-derived text is hostile ----------
+     Everything from a specimen (names, paths, rule/capability detail) is set
+     via textContent, never innerHTML, and defanged so a crafted name can never
+     render as a live link or smuggle markup into the console. */
+  function defang(s) {
+    s = String(s == null ? "" : s);
+    var out = "";
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      out += (c < 0x20 || c === 0x7f) ? "." : s[i]; // strip control chars
+    }
+    return out
+      .replace(/https?:\/\//gi, function (m) { return m.replace(/t/gi, "x"); }) // http->hxxp
+      .replace(/\./g, "[.]");
+  }
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text; // always escaped
+    return e;
+  }
+  function shortSha(s) { s = String(s || ""); return s.length > 16 ? s.slice(0, 10) + ".." + s.slice(-6) : s; }
+
+  /* ---------- score gauge (the one focal flourish) ---------- */
+  function gauge(score, verdict, size) {
+    var r = size === "mini" ? 13 : 58;
+    var sw = size === "mini" ? 3 : 9;
+    var box = (r + sw) * 2;
+    var circ = 2 * Math.PI * r;
+    var pct = Math.max(0, Math.min(100, score)) / 100;
+    var ns = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 " + box + " " + box);
+    svg.setAttribute("width", size === "mini" ? "32" : "132");
+    svg.setAttribute("height", size === "mini" ? "32" : "132");
+    var cx = box / 2;
+    function ring(color, dash, opacity) {
+      var c = document.createElementNS(ns, "circle");
+      c.setAttribute("cx", cx); c.setAttribute("cy", cx); c.setAttribute("r", r);
+      c.setAttribute("fill", "none");
+      c.style.stroke = color; // inline style resolves var(); a presentation attr would not
+      c.setAttribute("stroke-width", sw); c.setAttribute("stroke-linecap", "round");
+      if (dash != null) { c.setAttribute("stroke-dasharray", circ); c.setAttribute("stroke-dashoffset", circ * (1 - dash)); }
+      c.setAttribute("transform", "rotate(-90 " + cx + " " + cx + ")");
+      if (opacity != null) c.setAttribute("opacity", opacity);
+      return c;
+    }
+    svg.appendChild(ring("var(--hairline)", null, 1));
+    if (pct > 0) {
+      var arc = ring(VCOLOR[verdict] || "var(--unk)", pct, 1);
+      if (size !== "mini") { arc.style.transition = "stroke-dashoffset .7s cubic-bezier(.2,.8,.2,1)"; arc.setAttribute("stroke-dashoffset", circ); requestAnimationFrame(function () { arc.setAttribute("stroke-dashoffset", circ * (1 - pct)); }); }
+      svg.appendChild(arc);
+    }
+    return svg;
+  }
+
+  function confDots(conf) {
+    var n = CONFN[conf] || 1;
+    var wrap = el("span", "conf c-" + (conf || "LOW").toLowerCase());
+    for (var i = 1; i <= 3; i++) { var d = el("i"); if (i <= n) d.className = "on"; wrap.appendChild(d); }
+    return wrap;
+  }
+
+  /* ---------- queue ---------- */
+  var state = { data: null, selected: null };
+
+  function sortQueue(items) {
+    return items.slice().sort(function (a, b) {
+      var r = (RANK[b.verdict] || 0) - (RANK[a.verdict] || 0);
+      if (r) return r;
+      if (b.score !== a.score) return b.score - a.score;
+      return (CONFN[b.confidence] || 0) - (CONFN[a.confidence] || 0);
+    });
+  }
+
+  function renderQueue() {
+    var list = document.getElementById("queue-list");
+    list.textContent = "";
+    var items = sortQueue(state.data.queue);
+    document.getElementById("qcount").textContent = items.length + " specimens";
+    items.forEach(function (s) {
+      var row = el("div", "row" + (state.selected === s.submission_id ? " sel" : ""));
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", state.selected === s.submission_id ? "true" : "false");
+      row.dataset.id = s.submission_id;
+      var stripe = el("div", "stripe"); stripe.style.background = VCOLOR[s.verdict] || "var(--unk)"; row.appendChild(stripe);
+      var g = el("div", "gauge-mini"); g.appendChild(gauge(s.score, s.verdict, "mini")); row.appendChild(g);
+      var meta = el("div", "meta");
+      meta.appendChild(el("div", "fname", defang(s.name || s.submission_id)));
+      var sub = el("div", "sub");
+      sub.appendChild(el("span", "ftype", s.file_type ? defang(s.file_type) : "unidentified"));
+      sub.appendChild(el("span", "d"));
+      sub.appendChild(el("span", null, s.received || ""));
+      if (s.incomplete) { sub.appendChild(el("span", "d")); sub.appendChild(el("span", null, "incomplete")); }
+      meta.appendChild(sub);
+      row.appendChild(meta);
+      var right = el("div", "right");
+      var vt = el("span", "verdict-tag v-" + VCLASS[s.verdict], s.verdict);
+      right.appendChild(vt);
+      right.appendChild(confDots(s.confidence));
+      row.appendChild(right);
+      row.addEventListener("click", function () { select(s.submission_id); });
+      list.appendChild(row);
+    });
+  }
+
+  /* ---------- detail ---------- */
+  function crumbEl(path) {
+    var wrap = el("span", "crumb");
+    if (!path) { wrap.appendChild(el("span", "seg", "submission root")); return wrap; }
+    var segs = String(path).split("!");
+    segs.forEach(function (seg, i) {
+      if (i) wrap.appendChild(el("span", "sep", "!"));
+      wrap.appendChild(el("span", i === segs.length - 1 ? "leaf" : "seg", defang(seg)));
+    });
+    return wrap;
+  }
+
+  var ENGINE_LABEL = {
+    "mal-ident": "magika / identification",
+    "mal-static-yara": "yara-x / signatures",
+    "mal-extract": "extract / container",
+    "mal-capa": "capa / capabilities",
+    "mal-orchestrator": "orchestrator"
+  };
+
+  function renderDetail(d) {
+    var main = document.getElementById("detail");
+    main.textContent = "";
+    var inner = el("div", "detail-inner");
+
+    var back = el("button", "icon-btn back-btn", "Back");
+    back.addEventListener("click", function () { document.getElementById("body").classList.remove("show-detail"); });
+    inner.appendChild(back);
+
+    // hero
+    var hero = el("div", "hero");
+    var gw = el("div", "gauge-wrap");
+    gw.appendChild(gauge(d.score, d.verdict, "big"));
+    var num = el("div", "num");
+    num.appendChild(el("div", "score", String(d.score)));
+    num.appendChild(el("div", "of", "SCORE"));
+    gw.appendChild(num);
+    hero.appendChild(gw);
+
+    var info = el("div", "hero-info");
+    var hv = el("div", "hero-verdict");
+    hv.appendChild(el("div", "big m-" + VCLASS[d.verdict], d.verdict));
+    if (d.incomplete) hv.appendChild(el("span", "incomplete-tag", "incomplete"));
+    info.appendChild(hv);
+
+    var sub = el("div", "hero-sub");
+    var confBlk = el("div", "conf-line");
+    confBlk.appendChild(confDots(d.confidence));
+    confBlk.appendChild(el("span", "label", (d.confidence || "LOW") + " confidence"));
+    info.appendChild(sub);
+    var ft = el("div"); ft.appendChild(el("span", "k", "type")); ft.appendChild(el("span", "v", d.file_type ? defang(d.file_type) : "unidentified")); sub.appendChild(ft);
+    var cf = el("div"); cf.appendChild(el("span", "k", "confidence")); cf.appendChild(confBlk); sub.appendChild(cf);
+    var sh = el("div"); sh.appendChild(el("span", "k", "sha-256")); var shv = el("span", "v hash", d.sha256); sh.appendChild(shv); sub.appendChild(sh);
+    hero.appendChild(info);
+    inner.appendChild(hero);
+
+    // evidence tree
+    inner.appendChild(el("div", "sectlabel", "Evidence"));
+    (d.tree || []).forEach(function (node, idx) {
+      inner.appendChild(artifactCard(node, idx === 0));
+    });
+
+    inner.appendChild(footnote());
+    main.appendChild(inner);
+  }
+
+  function artifactCard(node, openByDefault) {
+    var card = el("div", "artifact" + (openByDefault ? " open" : ""));
+    var head = el("div", "artifact-head");
+    var chev = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    chev.setAttribute("class", "chev"); chev.setAttribute("width", "14"); chev.setAttribute("height", "14");
+    chev.setAttribute("viewBox", "0 0 24 24"); chev.setAttribute("fill", "none");
+    chev.setAttribute("stroke", "currentColor"); chev.setAttribute("stroke-width", "2.4");
+    chev.setAttribute("stroke-linecap", "round"); chev.setAttribute("stroke-linejoin", "round");
+    var p = document.createElementNS("http://www.w3.org/2000/svg", "path"); p.setAttribute("d", "m9 6 6 6-6 6"); chev.appendChild(p);
+    head.appendChild(chev);
+    var title = el("div", "artifact-title");
+    title.appendChild(crumbEl(node.path));
+    title.appendChild(el("div", "sha", shortSha(node.sha256)));
+    head.appendChild(title);
+    var rollup = el("div", "rollup");
+    if (node.file_type) rollup.appendChild(el("span", "ftype-pill", defang(node.file_type)));
+    var worst = nodeVerdict(node);
+    rollup.appendChild(el("span", "verdict-tag v-" + VCLASS[worst], worst));
+    head.appendChild(rollup);
+    head.addEventListener("click", function () { card.classList.toggle("open"); });
+    card.appendChild(head);
+
+    var body = el("div", "artifact-body");
+    var byEngine = groupByEngine(node.findings || []);
+    Object.keys(byEngine).forEach(function (eng) {
+      var section = el("div", "engine");
+      var eh = el("div", "engine-head");
+      eh.appendChild(el("span", "eng-dot"));
+      eh.appendChild(el("span", null, ENGINE_LABEL[eng] || eng));
+      eh.appendChild(el("span", "eng-count", "(" + byEngine[eng].length + ")"));
+      section.appendChild(eh);
+      byEngine[eng].forEach(function (f) { section.appendChild(findingRow(f)); });
+      body.appendChild(section);
+    });
+    card.appendChild(body);
+    return card;
+  }
+
+  function findingRow(f) {
+    var row = el("div", "finding");
+    var tag = el("div", "ftag v-" + VCLASS[f.verdict], f.verdict);
+    tag.style.color = VCOLOR[f.verdict];
+    row.appendChild(tag);
+    var mid = el("div");
+    mid.appendChild(el("div", "fdetail", defang(f.detail)));
+    mid.appendChild(el("div", "ftype-lbl", f.type));
+    row.appendChild(mid);
+    if (f.attck) row.appendChild(el("div", "attck", defang(f.attck)));
+    else row.appendChild(el("div"));
+    return row;
+  }
+
+  function groupByEngine(findings) {
+    var order = ["mal-ident", "mal-static-yara", "mal-capa", "mal-extract", "mal-orchestrator"];
+    var g = {};
+    findings.forEach(function (f) { (g[f.engine] = g[f.engine] || []).push(f); });
+    var out = {};
+    order.forEach(function (e) { if (g[e]) out[e] = g[e]; });
+    Object.keys(g).forEach(function (e) { if (!out[e]) out[e] = g[e]; });
+    return out;
+  }
+
+  function nodeVerdict(node) {
+    var worst = "UNKNOWN";
+    (node.findings || []).forEach(function (f) { if ((RANK[f.verdict] || 0) > (RANK[worst] || 0)) worst = f.verdict; });
+    return worst;
+  }
+
+  function footnote() {
+    var f = el("div", "footnote");
+    f.appendChild(document.createTextNode("Every verdict is fail-closed: an engine that cannot finish floors its node to SUSPICIOUS, never BENIGN. Severity and confidence are separate axes - the queue ranks by severity, then score. All specimen-derived text above is inert-rendered and defanged."));
+    return f;
+  }
+
+  function select(id) {
+    state.selected = id;
+    document.getElementById("body").classList.add("show-detail");
+    renderQueue();
+    var d = state.data.details[id];
+    if (d) renderDetail(d);
+    var row = document.querySelector('.row[data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+    if (row) row.scrollIntoView({ block: "nearest" });
+  }
+
+  /* ---------- keyboard triage ---------- */
+  document.getElementById("queue-list").addEventListener("keydown", function (e) {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    var items = sortQueue(state.data.queue);
+    var i = items.findIndex(function (s) { return s.submission_id === state.selected; });
+    i = e.key === "ArrowDown" ? Math.min(items.length - 1, i + 1) : Math.max(0, i - 1);
+    if (items[i]) select(items[i].submission_id);
+  });
+
+  /* ---------- theme ---------- */
+  (function theme() {
+    var saved = null;
+    try { saved = localStorage.getItem("oml-theme"); } catch (e) {}
+    if (saved) document.documentElement.setAttribute("data-theme", saved);
+    document.getElementById("theme-toggle").addEventListener("click", function () {
+      var cur = document.documentElement.getAttribute("data-theme");
+      var next = cur === "dark" ? "light" : cur === "light" ? "dark"
+        : (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "light" : "dark");
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("oml-theme", next); } catch (e) {}
+    });
+  })();
+
+  /* ---------- data layer: live gateway, else embedded preview ---------- */
+  function setLive(text, ok) {
+    document.getElementById("live-text").textContent = text;
+    var dot = document.querySelector("#live .dot");
+    if (dot) dot.style.background = ok ? "var(--ben)" : "var(--accent)";
+  }
+  async function boot() {
+    try {
+      var qr = await fetch("/v1/queue", { headers: { accept: "application/json" } });
+      if (!qr.ok) throw new Error("no queue");
+      var queue = await qr.json();
+      var details = {};
+      await Promise.all(queue.slice(0, 60).map(async function (s) {
+        try { var r = await fetch("/v1/submissions/" + encodeURIComponent(s.submission_id)); if (r.ok) details[s.submission_id] = normalize(await r.json()); } catch (e) {}
+      }));
+      state.data = { queue: queue, details: details };
+      setLive(queue.length + " live", true);
+    } catch (e) {
+      state.data = DEMO;
+      showPreviewBanner();
+      setLive("preview data", false);
+    }
+    renderQueue();
+    var first = sortQueue(state.data.queue)[0];
+    if (first && window.innerWidth > 900) select(first.submission_id);
+  }
+  function normalize(api) {
+    // the gateway returns a flat findings[] with breadcrumb paths; group into a
+    // tree of artifacts by path for the evidence view.
+    var byPath = {};
+    (api.findings || []).forEach(function (f) {
+      var p = f.path || "";
+      (byPath[p] = byPath[p] || { path: p, findings: [] }).findings.push(f);
+    });
+    var tree = Object.keys(byPath).sort(function (a, b) { return a.length - b.length; }).map(function (p) { return byPath[p]; });
+    if (tree[0]) { tree[0].sha256 = api.sha256; tree[0].file_type = api.file_type; }
+    return { submission_id: api.submission_id, sha256: api.sha256, file_type: api.file_type,
+      verdict: api.verdict, score: api.score, confidence: api.confidence, incomplete: api.incomplete, tree: tree };
+  }
+  function showPreviewBanner() {
+    var b = document.createElement("div");
+    b.className = "preview-banner";
+    b.textContent = "Preview - representative data from the OpenMalLab engines (no live gateway attached)";
+    document.querySelector(".app").insertBefore(b, document.querySelector(".body"));
+  }
+
+  /* ---------- embedded preview data ----------
+     Representative of real OpenMalLab engine output, used when no live gateway
+     is attached (e.g. this page opened standalone). The queue spans the range
+     on purpose: four confirmed-malicious high scores, a packed binary capa
+     characterizes into the SUSPICIOUS/MEDIUM tier, a crash that floored a node
+     to SUSPICIOUS but LOW (note it ranks BELOW the real detections), and clean
+     UNKNOWNs. This is what the triage axis is for. */
+  var F = function (engine, type, detail, verdict, confidence, attck) {
+    return { engine: engine, type: type, detail: detail, verdict: verdict, confidence: confidence, attck: attck || "" };
+  };
+  var DEMO = (function () {
+    var eicarSha = "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f";
+    var details = {
+      "sub-9f2a": { submission_id: "sub-9f2a", name: "invoice_2026.zip", sha256: "8b1a4c9f2e6d7a05b3c8e1f04a9d2b6c7e8f01a2b3c4d5e6f70819a2b3c4d5e6f",
+        file_type: "zip", verdict: "MALICIOUS", score: 95, confidence: "HIGH", incomplete: false, tree: [
+          { path: "", sha256: "8b1a4c9f2e6d7a05b3c8e1f04a9d2b6c7e8f01a2b3c4d5e6f70819a2b3c4d5e6f", file_type: "zip", findings: [
+            F("mal-ident", "file-type", "zip", "UNKNOWN", "LOW"),
+            F("mal-extract", "archive", "zip", "UNKNOWN", "LOW") ] },
+          { path: "readme.txt", sha256: "aa02f19b7c3d4e5f6071829304a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7", file_type: "txt", findings: [
+            F("mal-ident", "file-type", "txt", "UNKNOWN", "LOW") ] },
+          { path: "payloads!inner!eicar.com", sha256: eicarSha, file_type: "powershell", findings: [
+            F("mal-ident", "file-type", "powershell", "UNKNOWN", "LOW"),
+            F("mal-static-yara", "yara", "eicar_test_file", "MALICIOUS", "HIGH", "T1204") ] } ] },
+      "sub-7c14": { submission_id: "sub-7c14", name: "eicar.com", sha256: eicarSha,
+        file_type: "powershell", verdict: "MALICIOUS", score: 95, confidence: "HIGH", incomplete: false, tree: [
+          { path: "", sha256: eicarSha, file_type: "powershell", findings: [
+            F("mal-ident", "file-type", "powershell", "UNKNOWN", "LOW"),
+            F("mal-ident", "mime-type", "application/x-powershell", "UNKNOWN", "LOW"),
+            F("mal-static-yara", "yara", "eicar_test_file", "MALICIOUS", "HIGH", "T1204") ] } ] },
+      "sub-4e88": { submission_id: "sub-4e88", name: "shell.php", sha256: "c4d5e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a80912",
+        file_type: "php", verdict: "MALICIOUS", score: 95, confidence: "HIGH", incomplete: false, tree: [
+          { path: "", sha256: "c4d5e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a80912", file_type: "php", findings: [
+            F("mal-ident", "file-type", "php", "UNKNOWN", "LOW"),
+            F("mal-static-yara", "yara", "webshell_php_eval_superglobal", "MALICIOUS", "HIGH", "T1505.003") ] } ] },
+      "sub-2b31": { submission_id: "sub-2b31", name: "update.ps1", sha256: "d5e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091234",
+        file_type: "powershell", verdict: "MALICIOUS", score: 95, confidence: "HIGH", incomplete: false, tree: [
+          { path: "", sha256: "d5e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091234", file_type: "powershell", findings: [
+            F("mal-ident", "file-type", "powershell", "UNKNOWN", "LOW"),
+            F("mal-static-yara", "yara", "powershell_download_cradle", "MALICIOUS", "HIGH", "T1059.001") ] } ] },
+      "sub-6d02": { submission_id: "sub-6d02", name: "svchost_update.exe", sha256: "e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a809123456",
+        file_type: "pe", verdict: "SUSPICIOUS", score: 62, confidence: "MEDIUM", incomplete: false, tree: [
+          { path: "", sha256: "e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a809123456", file_type: "pe", findings: [
+            F("mal-ident", "file-type", "pe", "UNKNOWN", "LOW"),
+            F("mal-static-yara", "yara", "packer_upx", "SUSPICIOUS", "HIGH", "T1027.002"),
+            F("mal-capa", "capa-summary", "capa matched 9 capabilities", "UNKNOWN", "LOW"),
+            F("mal-capa", "capability", "host-interaction/process/inject: inject APC into a process", "SUSPICIOUS", "MEDIUM", "T1055.004"),
+            F("mal-capa", "capability", "anti-analysis/anti-debugging: check for software breakpoints", "SUSPICIOUS", "MEDIUM", "T1622"),
+            F("mal-capa", "capability", "communication/http: send HTTP request", "UNKNOWN", "LOW", "T1071.001"),
+            F("mal-capa", "capability", "data-manipulation/encryption/rc4: encrypt data using RC4", "UNKNOWN", "LOW", "C0027"),
+            F("mal-capa", "capability", "host-interaction/registry: set registry value", "UNKNOWN", "LOW", "T1112") ] } ] },
+      "sub-1a77": { submission_id: "sub-1a77", name: "id", sha256: "f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a80912345678",
+        file_type: "elf", verdict: "UNKNOWN", score: 0, confidence: "LOW", incomplete: false, tree: [
+          { path: "", sha256: "f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a80912345678", file_type: "elf", findings: [
+            F("mal-ident", "file-type", "elf", "UNKNOWN", "LOW"),
+            F("mal-capa", "capa-summary", "capa matched 7 capabilities", "UNKNOWN", "LOW"),
+            F("mal-capa", "capability", "host-interaction/session: get current user on Linux", "UNKNOWN", "LOW", "T1033"),
+            F("mal-capa", "capability", "host-interaction/os/info: get system information on Linux", "UNKNOWN", "LOW", "T1082"),
+            F("mal-capa", "capability", "host-interaction/process/terminate: terminate process", "UNKNOWN", "LOW", "C0018") ] } ] },
+      "sub-8e45": { submission_id: "sub-8e45", name: "archive.tar.gz", sha256: "0819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091234567890",
+        file_type: "gzip", verdict: "SUSPICIOUS", score: 16, confidence: "LOW", incomplete: true, tree: [
+          { path: "", sha256: "0819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091234567890", file_type: "gzip", findings: [
+            F("mal-ident", "file-type", "gzip", "UNKNOWN", "LOW"),
+            F("mal-extract", "decompression-bomb", "total extraction size cap reached; likely a decompression bomb", "SUSPICIOUS", "LOW") ] } ] },
+      "sub-3f90": { submission_id: "sub-3f90", name: "notes.txt", sha256: "19a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a809123456789012",
+        file_type: "txt", verdict: "UNKNOWN", score: 0, confidence: "LOW", incomplete: false, tree: [
+          { path: "", sha256: "19a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a809123456789012", file_type: "txt", findings: [
+            F("mal-ident", "file-type", "txt", "UNKNOWN", "LOW"),
+            F("mal-ident", "file-type-group", "text", "UNKNOWN", "LOW") ] } ] }
+    };
+    var received = { "sub-9f2a": "2m ago", "sub-7c14": "6m ago", "sub-4e88": "11m ago", "sub-2b31": "18m ago",
+      "sub-6d02": "24m ago", "sub-1a77": "31m ago", "sub-8e45": "40m ago", "sub-3f90": "52m ago" };
+    var queue = Object.keys(details).map(function (id) {
+      var d = details[id];
+      return { submission_id: id, name: d.name, file_type: d.file_type, verdict: d.verdict,
+        score: d.score, confidence: d.confidence, incomplete: d.incomplete, received: received[id] };
+    });
+    return { queue: queue, details: details };
+  })();
+
+  boot();
+</script>
