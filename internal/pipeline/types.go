@@ -171,8 +171,15 @@ func ConfidenceFor(engine, findingType string, v Verdict) Confidence {
 	if engine == "mal-static-yara" && findingType == "yara" {
 		return ConfHigh
 	}
-	// informational output (identification, archive typing) carries an UNKNOWN
-	// verdict and scores zero regardless; keep it out of the confidence axis.
+	// capa reports behavioral capabilities: real signal, but inference from
+	// static features, so medium at most. (its UNKNOWN capabilities fall through
+	// to the low branch below and score zero.)
+	if engine == "mal-capa" && findingType == "capability" && v >= Suspicious {
+		return ConfMedium
+	}
+	// informational output (identification, archive typing, behavioral context)
+	// carries an UNKNOWN verdict and scores zero regardless; keep it out of the
+	// confidence axis.
 	if v <= Unknown {
 		return ConfLow
 	}

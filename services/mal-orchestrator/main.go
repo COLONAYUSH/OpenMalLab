@@ -10,6 +10,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	dclient "github.com/docker/docker/client"
@@ -33,6 +34,16 @@ func envDurOr(key string, def time.Duration) time.Duration {
 			return d
 		}
 		log.Fatalf("%s: bad duration %q", key, v)
+	}
+	return def
+}
+
+func envInt64Or(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+		log.Fatalf("%s: bad integer %q", key, v)
 	}
 	return def
 }
@@ -68,11 +79,15 @@ func main() {
 		workerImage:  envOr("MAL_WORKER_IMAGE", "openmallab/mal-static-yara:m0"),
 		identImage:   envOr("MAL_IDENT_IMAGE", "openmallab/mal-ident:m0"),
 		extractImage: envOr("MAL_EXTRACT_IMAGE", "openmallab/mal-extract:m0"),
+		capaImage:    envOr("MAL_CAPA_IMAGE", "openmallab/mal-capa:m0"),
 		brokerImage:  envOr("MAL_BROKER_IMAGE", "openmallab/mal-broker:m0"),
 		workerWall:   envDurOr("MAL_WORKER_WALL_CLOCK", 60*time.Second),
 		identWall:    envDurOr("MAL_IDENT_WALL_CLOCK", 30*time.Second),
 		extractWall:  envDurOr("MAL_EXTRACT_WALL_CLOCK", 60*time.Second),
+		capaWall:     envDurOr("MAL_CAPA_WALL_CLOCK", 300*time.Second),
 		brokerWall:   envDurOr("MAL_BROKER_WALL_CLOCK", 30*time.Second),
+		capaMemBytes: envInt64Or("MAL_CAPA_MEMORY_BYTES", 2<<30), // 2 GiB; vivisect is hungry
+		capaScratch:  envOr("MAL_CAPA_SCRATCH", "256m"),
 	}
 
 	// crash hygiene: jails are single-use and staging dirs are per-run; anything
@@ -91,8 +106,8 @@ func main() {
 	w.RegisterWorkflow(SubmissionWorkflow)
 	w.RegisterActivity(a)
 
-	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s broker=%s)",
-		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.extractImage, a.brokerImage)
+	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s capa=%s broker=%s)",
+		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.extractImage, a.capaImage, a.brokerImage)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker stopped: %v", err)
 	}

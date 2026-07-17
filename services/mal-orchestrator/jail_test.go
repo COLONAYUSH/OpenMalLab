@@ -143,6 +143,47 @@ func TestExtractJailIsAScanJailPlusOneWritableOut(t *testing.T) {
 	}
 }
 
+// per-engine overrides may only add env and raise resource caps; they must
+// never touch the security posture. this pins that: after applying capa's
+// heavy-engine overrides, every hardening flag is still exactly the default.
+func TestOverridesRaiseCapsButNeverLoosenSecurity(t *testing.T) {
+	cfg := jailedConfig("openmallab/mal-capa:m0")
+	hc := jailedHostConfig()
+	applyOverrides(cfg, hc, jailSpec{
+		env:         []string{"HOME=/scratch", "TMPDIR=/scratch"},
+		memoryBytes: 2 << 30,
+		scratchSize: "256m",
+	})
+
+	// the overrides took effect.
+	if hc.Memory != 2<<30 || hc.MemorySwap != 2<<30 {
+		t.Fatalf("memory override not applied: %d/%d", hc.Memory, hc.MemorySwap)
+	}
+	if hc.Tmpfs["/scratch"] != "rw,noexec,nosuid,nodev,size=256m" {
+		t.Fatalf("scratch override wrong: %q", hc.Tmpfs["/scratch"])
+	}
+	if len(cfg.Env) != 2 || cfg.Env[0] != "HOME=/scratch" {
+		t.Fatalf("env override wrong: %v", cfg.Env)
+	}
+	// and none of the security posture moved.
+	if string(hc.NetworkMode) != "none" || len(hc.CapDrop) != 1 || hc.CapDrop[0] != "ALL" ||
+		!hc.ReadonlyRootfs || hc.Privileged || cfg.User != "65534:65534" {
+		t.Fatal("an override loosened the security posture")
+	}
+	if !contains(hc.Tmpfs["/scratch"], "noexec") {
+		t.Fatal("scratch lost noexec")
+	}
+	// a zero-value spec changes nothing.
+	cfg2 := jailedConfig("x")
+	hc2 := jailedHostConfig()
+	applyOverrides(cfg2, hc2, jailSpec{})
+	if hc2.Memory != 512<<20 || len(cfg2.Env) != 0 || hc2.Tmpfs["/scratch"] != "rw,noexec,nosuid,nodev,size=64m" {
+		t.Fatal("zero-value override must be a no-op")
+	}
+}
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
 func TestShaValidationIsStrict(t *testing.T) {
 	good := strings.Repeat("0123456789abcdef", 4)
 	if !shaHex.MatchString(good) {

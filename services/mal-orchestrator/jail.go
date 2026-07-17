@@ -132,6 +132,13 @@ type jailSpec struct {
 	stdin        []byte // nil means no stdin at all
 	wallClock    time.Duration
 	submissionID string // audit label only
+	// per-engine overrides on the shared recipe. zero values keep the default.
+	// only heavier engines (capa) raise these; the light engines never do, so
+	// the default jail stays tight. env is added on top of the empty base env
+	// (some engines, e.g. capa, need HOME pointed at the writable scratch).
+	env         []string
+	memoryBytes int64  // 0 => default (512 MiB)
+	scratchSize string // "" => default ("64m")
 }
 
 type jailResult struct {
@@ -139,6 +146,24 @@ type jailResult struct {
 	stderr          []byte
 	exitCode        int64
 	stdoutTruncated bool
+}
+
+// applyOverrides layers a spec's per-engine deviations onto the shared recipe.
+// pure and testable. it can only ADD env and RAISE resource caps for a named
+// engine; it never loosens the security posture (network, caps, rootfs,
+// seccomp, user, noexec scratch all stay exactly as jailedHostConfig set them).
+func applyOverrides(cfg *container.Config, hc *container.HostConfig, spec jailSpec) {
+	if len(spec.env) > 0 {
+		cfg.Env = append(cfg.Env, spec.env...)
+	}
+	if spec.memoryBytes > 0 {
+		hc.Memory = spec.memoryBytes
+		hc.MemorySwap = spec.memoryBytes // still zero swap headroom
+	}
+	if spec.scratchSize != "" {
+		// keep every hardening flag; only the size changes.
+		hc.Tmpfs["/scratch"] = "rw,noexec,nosuid,nodev,size=" + spec.scratchSize
+	}
 }
 
 // runJailed runs one single-use jailed container to completion: create,
@@ -156,6 +181,7 @@ func runJailed(ctx context.Context, docker *client.Client, spec jailSpec) (*jail
 	}
 	hc := jailedHostConfig()
 	hc.Mounts = spec.mounts
+	applyOverrides(cfg, hc, spec)
 
 	created, err := docker.ContainerCreate(ctx, cfg, hc, &network.NetworkingConfig{}, nil, "")
 	if err != nil {

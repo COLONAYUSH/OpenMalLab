@@ -151,6 +151,14 @@ func TestConfidenceForPolicy(t *testing.T) {
 	if c := ConfidenceFor("some-future-engine", "capability", Suspicious); c != ConfMedium {
 		t.Fatalf("generic detection got %v, want MEDIUM", c)
 	}
+	// capa capabilities are behavioral inference: medium when suspicious, and
+	// low (score-zero) when merely informational UNKNOWN.
+	if c := ConfidenceFor("mal-capa", "capability", Suspicious); c != ConfMedium {
+		t.Fatalf("suspicious capa capability got %v, want MEDIUM", c)
+	}
+	if c := ConfidenceFor("mal-capa", "capability", Unknown); c != ConfLow {
+		t.Fatalf("informational capa capability got %v, want LOW", c)
+	}
 }
 
 // helper to build a findings slice tersely.

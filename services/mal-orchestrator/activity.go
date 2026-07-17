@@ -47,11 +47,17 @@ type Analyzer struct {
 	workerImage  string
 	identImage   string
 	extractImage string
+	capaImage    string
 	brokerImage  string
 	workerWall   time.Duration
 	identWall    time.Duration
 	extractWall  time.Duration
+	capaWall     time.Duration
 	brokerWall   time.Duration
+	// capa is memory- and disk-hungry (vivisect); these raise its jail's caps
+	// above the tight default. the other engines never touch them.
+	capaMemBytes int64
+	capaScratch  string
 }
 
 // the sha is about to be spliced into an engine api mount spec; it gets
@@ -85,8 +91,12 @@ type brokerReport struct {
 
 // StaticAnalyzeActivity runs the yara engine over the artifact, jailed.
 func (a *Analyzer) StaticAnalyzeActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
-	br, err := a.runWorkerThroughBroker(ctx, a.workerImage, a.workerWall, in,
-		[]mount.Mount{sampleMount(a.vaultVolume, in.SHA256)})
+	br, err := a.runWorkerThroughBroker(ctx, jailSpec{
+		image:        a.workerImage,
+		mounts:       []mount.Mount{sampleMount(a.vaultVolume, in.SHA256)},
+		wallClock:    a.workerWall,
+		submissionID: in.SubmissionID,
+	}, in.SHA256)
 	if err != nil {
 		return pipeline.EngineReport{}, err
 	}
@@ -96,8 +106,38 @@ func (a *Analyzer) StaticAnalyzeActivity(ctx context.Context, in pipeline.Submis
 // IdentifyActivity runs magika over the artifact, jailed. identification is
 // evidence like any other engine output; it crosses the same broker.
 func (a *Analyzer) IdentifyActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
-	br, err := a.runWorkerThroughBroker(ctx, a.identImage, a.identWall, in,
-		[]mount.Mount{sampleMount(a.vaultVolume, in.SHA256)})
+	br, err := a.runWorkerThroughBroker(ctx, jailSpec{
+		image:        a.identImage,
+		mounts:       []mount.Mount{sampleMount(a.vaultVolume, in.SHA256)},
+		wallClock:    a.identWall,
+		submissionID: in.SubmissionID,
+	}, in.SHA256)
+	if err != nil {
+		return pipeline.EngineReport{}, err
+	}
+	return mapReport(br), nil
+}
+
+// CapaActivity runs Mandiant capa over the artifact, jailed. it reports
+// ATT&CK/MBC-mapped capabilities as behavioral evidence. the workflow only
+// dispatches it for executables (capa cannot analyze anything else), so it is
+// not run per-artifact like the format-agnostic engines.
+//
+// capa is the heavy engine: vivisect is memory- and time-hungry, and it needs
+// a writable HOME for its rule cache. so this jail raises memory and scratch
+// and points HOME/TMPDIR at the writable scratch tmpfs. every security flag of
+// the recipe (no network, caps dropped, read-only rootfs, seccomp, non-root,
+// noexec scratch) is unchanged.
+func (a *Analyzer) CapaActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
+	br, err := a.runWorkerThroughBroker(ctx, jailSpec{
+		image:        a.capaImage,
+		mounts:       []mount.Mount{sampleMount(a.vaultVolume, in.SHA256)},
+		wallClock:    a.capaWall,
+		submissionID: in.SubmissionID,
+		env:          []string{"HOME=/scratch", "TMPDIR=/scratch"},
+		memoryBytes:  a.capaMemBytes,
+		scratchSize:  a.capaScratch,
+	}, in.SHA256)
 	if err != nil {
 		return pipeline.EngineReport{}, err
 	}
@@ -139,11 +179,12 @@ func (a *Analyzer) ExtractActivity(ctx context.Context, in pipeline.SubmissionIn
 		return none, fmt.Errorf("staging chown: %w", err)
 	}
 
-	br, err := a.runWorkerThroughBroker(ctx, a.extractImage, a.extractWall, in,
-		[]mount.Mount{
-			sampleMount(a.vaultVolume, in.SHA256),
-			outMount(a.stagingVol, runID),
-		})
+	br, err := a.runWorkerThroughBroker(ctx, jailSpec{
+		image:        a.extractImage,
+		mounts:       []mount.Mount{sampleMount(a.vaultVolume, in.SHA256), outMount(a.stagingVol, runID)},
+		wallClock:    a.extractWall,
+		submissionID: in.SubmissionID,
+	}, in.SHA256)
 	if err != nil {
 		return none, err
 	}
@@ -260,30 +301,26 @@ func (a *Analyzer) ingestChild(stageDir, claimedSHA string) (uint64, error) {
 }
 
 // runWorkerThroughBroker is the one enforcement path every engine goes through:
-// jailed worker with the given mounts, its raw stdout piped into a jailed
-// broker, then a strict decode of the broker's validated bytes. it returns the
-// broker's report; callers map it onto the pipeline types.
-func (a *Analyzer) runWorkerThroughBroker(ctx context.Context, image string, wall time.Duration, in pipeline.SubmissionInput, mounts []mount.Mount) (*brokerReport, error) {
+// the given jailed worker spec, its raw stdout piped into a jailed broker, then
+// a strict decode of the broker's validated bytes. it returns the broker's
+// report; callers map it onto the pipeline types. sha is the artifact's hash,
+// validated before it is ever used in a mount spec.
+func (a *Analyzer) runWorkerThroughBroker(ctx context.Context, spec jailSpec, sha string) (*brokerReport, error) {
 	logger := activity.GetLogger(ctx)
 
-	if !shaHex.MatchString(in.SHA256) {
+	if !shaHex.MatchString(sha) {
 		return nil, temporal.NewNonRetryableApplicationError(
 			"submission sha256 is not 64 lowercase hex chars", "BadInput", nil)
 	}
 
 	// 1) the jailed worker. hostile bytes are parsed only in there.
-	scan, err := runJailed(ctx, a.docker, jailSpec{
-		image:        image,
-		mounts:       mounts,
-		wallClock:    wall,
-		submissionID: in.SubmissionID,
-	})
+	scan, err := runJailed(ctx, a.docker, spec)
 	if err != nil {
 		return nil, fmt.Errorf("worker jail: %w", err)
 	}
 	if len(scan.stderr) > 0 {
 		logger.Warn("worker stderr (sanitized)",
-			"submission", in.SubmissionID,
+			"submission", spec.submissionID,
 			"bytes", len(scan.stderr),
 			"preview", sanitizeForLog(scan.stderr, 200))
 	}
@@ -300,7 +337,7 @@ func (a *Analyzer) runWorkerThroughBroker(ctx context.Context, image string, wal
 		image:        a.brokerImage,
 		stdin:        scan.stdout,
 		wallClock:    a.brokerWall,
-		submissionID: in.SubmissionID,
+		submissionID: spec.submissionID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("broker jail: %w", err)

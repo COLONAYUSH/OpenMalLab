@@ -110,6 +110,14 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 			res.FileType = fileTypeOf(identRep)
 		}
 
+		// capability analysis, only for executables: capa cannot analyze other
+		// formats, and loading its rule set per artifact is expensive, so we
+		// gate on what magika identified (content, never the extension).
+		if isExecutable(identRep) {
+			capaF := workflow.ExecuteActivity(ctx, a.CapaActivity, artifact)
+			fold(item.Path, "mal-capa", capaF)
+		}
+
 		// unpack one level while within the depth cap, then enqueue children.
 		// extraction runs on every artifact within depth: we do not rely on any
 		// single identifier being right about whether something is a container.
@@ -143,6 +151,27 @@ func fileTypeOf(rep pipeline.EngineReport) string {
 		}
 	}
 	return ""
+}
+
+// executableTypes are the magika labels capa can actually analyze.
+var executableTypes = map[string]bool{
+	"pe": true, "elf": true, "macho": true, "dotnet": true, "coff": true,
+}
+
+// isExecutable decides whether capa should run, from magika's content-based
+// identification. it also fires when ident labels the file's group as an
+// executable, so a format magika names but we did not enumerate still gets
+// capability analysis.
+func isExecutable(ident pipeline.EngineReport) bool {
+	for _, f := range ident.Findings {
+		if f.Type == "file-type" && executableTypes[f.Detail] {
+			return true
+		}
+		if f.Type == "file-type-group" && f.Detail == "executable" {
+			return true
+		}
+	}
+	return false
 }
 
 // crumb extends a breadcrumb path with a child's name inside its container.

@@ -119,6 +119,7 @@ services:
       MAL_WORKER_IMAGE: openmallab/mal-static-yara:m0
       MAL_IDENT_IMAGE: openmallab/mal-ident:m0
       MAL_EXTRACT_IMAGE: openmallab/mal-extract:m0
+      MAL_CAPA_IMAGE: openmallab/mal-capa:m0
       MAL_BROKER_IMAGE: openmallab/mal-broker:m0
     volumes:
       # the engine socket is the spawn authority in phase 1: the orchestrator
@@ -175,12 +176,31 @@ services:
       dockerfile: services/mal-extract/Dockerfile
     image: openmallab/mal-extract:m0
 
+  mal-capa:
+    profiles: [build]
+    build:
+      context: ..
+      dockerfile: services/mal-capa/Dockerfile
+      # optional private-index credential for the capa pip install; absent on a
+      # clean network (public PyPI). set MAL_PIP_CONF to your pip.conf path.
+      secrets:
+        - pip_conf
+    image: openmallab/mal-capa:m0
+
   mal-broker:
     profiles: [build]
     build:
       context: ..
       dockerfile: services/mal-broker/Dockerfile
     image: openmallab/mal-broker:m0
+
+secrets:
+  # the capa build's optional private pip index (with its credential). set
+  # MAL_PIP_CONF to your pip.conf to build behind a private index; unset, it
+  # defaults to an empty file and pip uses public PyPI. never baked into a
+  # layer (BuildKit secret), never committed.
+  pip_conf:
+    file: ${MAL_PIP_CONF:-/dev/null}
 
 volumes:
   pgdata:
