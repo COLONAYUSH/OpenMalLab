@@ -12,8 +12,8 @@
     --text: #e6e9f0;
     --text-2: #9aa3b5;
     --text-3: #667085;
-    --accent: #3fb6c4;
-    --accent-dim: #2c8b96;
+    --accent: #aebccd;
+    --accent-dim: #6d7a8d;
     --mal: #ff5c5c;
     --sus: #ffb340;
     --unk: #8b93a7;
@@ -40,8 +40,8 @@
       --text: #141821;
       --text-2: #56607a;
       --text-3: #8a93a6;
-      --accent: #1c8a97;
-      --accent-dim: #56b3bd;
+      --accent: #45576e;
+      --accent-dim: #8996aa;
       --mal: #e23a3a;
       --sus: #c9810e;
       --unk: #6b7385;
@@ -57,7 +57,7 @@
   :root[data-theme="dark"] {
     --ground: #0b0d12; --surface: #12151d; --surface-2: #161a23; --surface-3: #1c212c;
     --hairline: #252b38; --hairline-soft: #1b202a; --text: #e6e9f0; --text-2: #9aa3b5;
-    --text-3: #667085; --accent: #3fb6c4; --accent-dim: #2c8b96;
+    --text-3: #667085; --accent: #aebccd; --accent-dim: #6d7a8d;
     --mal: #ff5c5c; --sus: #ffb340; --unk: #8b93a7; --ben: #4ec98f;
     --mal-bg: rgba(255,92,92,.12); --sus-bg: rgba(255,179,64,.12); --unk-bg: rgba(139,147,167,.12); --ben-bg: rgba(78,201,143,.12);
     --shadow: 0 1px 0 rgba(255,255,255,.02), 0 8px 30px rgba(0,0,0,.35);
@@ -65,7 +65,7 @@
   :root[data-theme="light"] {
     --ground: #eef1f5; --surface: #fff; --surface-2: #f7f9fc; --surface-3: #eef1f6;
     --hairline: #dde3ec; --hairline-soft: #e7ebf1; --text: #141821; --text-2: #56607a;
-    --text-3: #8a93a6; --accent: #1c8a97; --accent-dim: #56b3bd;
+    --text-3: #8a93a6; --accent: #45576e; --accent-dim: #8996aa;
     --mal: #e23a3a; --sus: #c9810e; --unk: #6b7385; --ben: #1f9d63;
     --mal-bg: rgba(226,58,58,.10); --sus-bg: rgba(201,129,14,.12); --unk-bg: rgba(107,115,133,.10); --ben-bg: rgba(31,157,99,.10);
     --shadow: 0 1px 2px rgba(20,24,33,.06), 0 10px 30px rgba(20,24,33,.08);
@@ -96,12 +96,14 @@
   }
   .brand { display: flex; align-items: center; gap: 11px; }
   .brand svg { display: block; }
-  /* var() resolves in CSS, not in SVG presentation attributes, so color the mark here */
-  .brand .hex-outer { stroke: var(--accent); fill: rgba(63, 182, 196, 0.06); }
-  .brand .hex-inner { stroke: var(--accent-dim); fill: none; }
-  .brand .core { fill: var(--accent); }
+  /* var() resolves in CSS, not in SVG presentation attributes, so color the mark
+     here: a silver hexagonal containment cell with the red specimen caged behind
+     bars, echoing the OpenMalLab logo. */
+  .brand .hex-outer { stroke: var(--accent); fill: rgba(174,188,205, 0.05); }
+  .brand .core { fill: var(--mal); }
+  .brand .bars line { stroke: var(--accent); stroke-width: 1.25; stroke-linecap: round; }
   .brand .name { font-weight: 650; letter-spacing: .2px; font-size: 15px; }
-  .brand .name b { color: var(--accent); font-weight: 650; }
+  .brand .name b { color: var(--mal); font-weight: 650; }
   .brand .kicker {
     font-family: var(--mono); font-size: 10.5px; letter-spacing: .16em;
     text-transform: uppercase; color: var(--text-3); padding-top: 2px;
@@ -118,9 +120,9 @@
     box-shadow: 0 0 0 0 var(--accent); animation: pulse 2s infinite;
   }
   @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 rgba(63,182,196,.5); }
-    70% { box-shadow: 0 0 0 6px rgba(63,182,196,0); }
-    100% { box-shadow: 0 0 0 0 rgba(63,182,196,0); }
+    0% { box-shadow: 0 0 0 0 rgba(174,188,205,.5); }
+    70% { box-shadow: 0 0 0 6px rgba(174,188,205,0); }
+    100% { box-shadow: 0 0 0 0 rgba(174,188,205,0); }
   }
   .icon-btn {
     display: inline-grid; place-items: center; width: 34px; height: 34px;
@@ -260,7 +262,7 @@
   .finding .ftype-lbl { font-size: 11px; color: var(--text-3); margin-top: 2px; }
   .finding .attck {
     font-family: var(--mono); font-size: 10.5px; color: var(--accent);
-    background: rgba(63,182,196,.08); border: 1px solid rgba(63,182,196,.22);
+    background: rgba(174,188,205,.08); border: 1px solid rgba(174,188,205,.22);
     border-radius: 5px; padding: 2px 7px; white-space: nowrap; align-self: start; margin-top: 1px;
   }
   :root[data-theme="light"] .finding .attck, :root:not([data-theme]) .finding .attck { }
@@ -287,10 +289,14 @@
 <div class="app">
   <header class="topbar">
     <div class="brand">
-      <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true">
-        <path class="hex-outer" d="M13 1.6 22.9 7.3v11.4L13 24.4 3.1 18.7V7.3L13 1.6Z" stroke-width="1.4"/>
-        <path class="hex-inner" d="M13 6.4 18.7 9.7v6.6L13 19.6 7.3 16.3V9.7L13 6.4Z" stroke-width="1"/>
-        <circle class="core" cx="13" cy="13" r="2.1"/>
+      <svg width="27" height="27" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+        <path class="hex-outer" d="M13 1.6 22.9 7.3v11.4L13 24.4 3.1 18.7V7.3L13 1.6Z" stroke-width="1.6"/>
+        <circle class="core" cx="13" cy="13.2" r="3.3"/>
+        <g class="bars">
+          <line x1="9.5" y1="7.8" x2="9.5" y2="18.2"/>
+          <line x1="13" y1="7.2" x2="13" y2="18.8"/>
+          <line x1="16.5" y1="7.8" x2="16.5" y2="18.2"/>
+        </g>
       </svg>
       <div>
         <div class="name">Open<b>Mal</b>Lab</div>
