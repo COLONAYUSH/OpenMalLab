@@ -54,7 +54,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: go vulnerability gate
-        run: deploy/security/vulncheck.sh
+        run: |
+          deploy/security/vulncheck.sh --selftest
+          deploy/security/vulncheck.sh
 
   rust:
     # the workers that parse hostile bytes: build and test the workspace.
