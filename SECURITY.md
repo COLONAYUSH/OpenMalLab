@@ -23,11 +23,13 @@ bounded-schema result boundary and its sub-process broker, and the fail-closed v
 Findings against these are highest priority.
 
 ## Dependency and supply chain
-Every push runs `govulncheck` over the whole Go module in CI (`deploy/security/vulncheck.sh`).
-It fails the build on any vulnerability reachable from our code, except a small set of advisories
-accepted in `deploy/security/govulncheck-allow.txt`. An advisory is accepted only when it is
-unfixed upstream **and** outside our threat model, and every entry carries a dated reason. When an
-upstream fix lands we bump the dependency and drop the entry; the gate warns if an accepted entry
-is no longer reachable. The current set is the Moby SDK daemon advisories that only the trusted
-orchestrator could ever reach (no jail has a docker socket or a network), with the per-advisory
-reasoning written out in that file.
+Every push runs two supply-chain gates in CI: `govulncheck` over the whole Go module
+(`deploy/security/vulncheck.sh`) and `cargo-audit` over the locked Rust tree
+(`deploy/security/rust-audit.sh`). Each fails the build on any advisory reachable from our code,
+except a small set accepted in the matching allow file (`deploy/security/govulncheck-allow.txt`,
+`deploy/security/cargo-audit-allow.txt`). An advisory is accepted only when it is unfixed upstream
+**and** outside our threat model, and every entry carries a dated reason. When an upstream fix
+lands we bump the dependency and drop the entry. The current set is the Moby SDK daemon advisories
+that only the trusted orchestrator could reach (no jail has a docker socket or a network), and one
+`rsa` timing advisory reachable only through yara-x's signature parsing, where we hold no key and
+perform no decryption. The per-advisory reasoning is written out in each file.

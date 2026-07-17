@@ -1,0 +1,20 @@
+# cargo-audit acceptance list for OpenMalLab (the Rust workers).
+#
+# The CI Rust supply-chain gate (deploy/security/rust-audit.sh) fails the build
+# on any RustSec advisory against our locked dependency tree, EXCEPT the ids
+# listed here. Same rule as the Go side: an id belongs here only when it is
+# unfixed upstream AND outside our threat model, with a written, dated reason.
+# When a fix ships, bump the crate and DELETE the entry.
+#
+# Reviewed: 2026-07-17.
+
+# RUSTSEC-2023-0071: Marvin attack, a timing sidechannel in the `rsa` crate's
+# RSA decryption. Unfixed upstream (no patched release). Pulled in transitively
+# ONLY by yara-x (its PE Authenticode-signature parsing); we never call it, and
+# we hold no RSA private key and perform no RSA decryption, so there is no
+# secret for the sidechannel to recover. Drop this the day rsa ships a fix and
+# yara-x picks it up.
+RUSTSEC-2023-0071
+
+# Note: RUSTSEC-2025-0141 (bincode unmaintained) is an informational warning,
+# not a vulnerability; cargo-audit does not fail on it and we do not list it.
