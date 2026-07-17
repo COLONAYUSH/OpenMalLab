@@ -396,7 +396,8 @@
 
   var ENGINE_LABEL = {
     "mal-ident": "magika / identification", "mal-static-yara": "yara-x / signatures",
-    "mal-extract": "extract / container", "mal-capa": "capa / capabilities", "mal-orchestrator": "orchestrator"
+    "mal-extract": "extract / container", "mal-capa": "capa / capabilities",
+    "mal-floss": "floss / strings", "mal-orchestrator": "orchestrator"
   };
 
   function renderDetail(d) {
@@ -486,13 +487,15 @@
     var mid = el("div"); mid.appendChild(el("div", "fdetail", defang(f.detail)));
     var fm = el("div", "fmeta");
     var fv = el("span", "fverd", f.verdict); fv.style.setProperty("--fsev", VCOLOR[f.verdict] || "var(--unk)"); fm.appendChild(fv);
-    fm.appendChild(el("span", "ftype-lbl", f.type)); mid.appendChild(fm); row.appendChild(mid);
+    fm.appendChild(el("span", "ftype-lbl", f.type));
+    if (f.confidence) fm.appendChild(confDots(f.confidence));
+    mid.appendChild(fm); row.appendChild(mid);
     if (f.attck) row.appendChild(el("div", "attck", defang(f.attck))); else row.appendChild(el("div"));
     return row;
   }
 
   function groupByEngine(findings) {
-    var order = ["mal-ident", "mal-static-yara", "mal-capa", "mal-extract", "mal-orchestrator"], g = {};
+    var order = ["mal-ident", "mal-static-yara", "mal-capa", "mal-floss", "mal-extract", "mal-orchestrator"], g = {};
     findings.forEach(function (f) { (g[f.engine] = g[f.engine] || []).push(f); });
     var out = {}; order.forEach(function (e) { if (g[e]) out[e] = g[e]; }); Object.keys(g).forEach(function (e) { if (!out[e]) out[e] = g[e]; }); return out;
   }
