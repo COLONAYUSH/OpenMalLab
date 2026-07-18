@@ -249,8 +249,8 @@ func (r *Registry) put(kind Kind, key, label string, attrs map[string]string, so
 		return Fact{}, fmt.Errorf("knowledge: too many attributes (%d > %d)", len(attrs), maxAttrs)
 	}
 	for k, v := range attrs {
-		if len(k) > maxAttrLen || len(v) > maxAttrLen {
-			return Fact{}, fmt.Errorf("knowledge: attribute too long")
+		if len(k) > maxAttrLen || len(v) > maxAttrLen || hasControl(k) || hasControl(v) {
+			return Fact{}, fmt.Errorf("knowledge: attribute invalid")
 		}
 	}
 	incoming := Fact{

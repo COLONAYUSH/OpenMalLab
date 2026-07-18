@@ -252,6 +252,16 @@ func TestAttributeCaps(t *testing.T) {
 	}
 }
 
+func TestCurateRejectsControlCharAttrs(t *testing.T) {
+	r := newReg()
+	if _, err := r.Curate(KindFamily, "x", "l", map[string]string{"k": "v\x00"}, "s"); err == nil {
+		t.Fatal("control char in attr value accepted")
+	}
+	if _, err := r.Curate(KindFamily, "y", "l", map[string]string{"k\n": "v"}, "s"); err == nil {
+		t.Fatal("control char in attr key accepted")
+	}
+}
+
 func TestSeed(t *testing.T) {
 	r := NewRegistry(NewMemStore())
 	m := r.store.(*MemStore)
