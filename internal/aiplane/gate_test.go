@@ -204,3 +204,51 @@ func TestEnrichmentVerdictAndDispositionString(t *testing.T) {
 		}
 	}
 }
+
+func TestGateSignalsBlockAcceptButNeverPromote(t *testing.T) {
+	r := regWith(t)
+	c := curatedCite(t, r, knowledge.KindAttck, "T1055")
+	grounded := Proposal{Hypotheses: []Hypothesis{{Kind: "technique", Claim: "x", Confidence: "LOW", Citations: []Citation{c}}}}
+	g := NewGate(r)
+
+	// baseline: grounded + allow-listed + no signals -> accept.
+	if d := g.EvaluateWithSignals(Evidence{}, grounded, nil).Hypotheses[0].Disposition; d != DispAccept {
+		t.Fatalf("baseline should accept, got %s", d)
+	}
+	// each stop signal blocks the accept and sends it to a human.
+	for name, sig := range map[string]GateSignals{
+		"refuted":         {Refuted: true},
+		"novelty":         {Novelty: 0.9},
+		"low-consistency": {SelfConsistency: 0.3},
+		"calibrated-low":  {CalibratedConfidence: "LOW"},
+	} {
+		got := g.EvaluateWithSignals(Evidence{}, grounded, []GateSignals{sig}).Hypotheses[0].Disposition
+		if got != DispEscalate {
+			t.Fatalf("%s: a stop signal must block accept -> escalate, got %s", name, got)
+		}
+	}
+	// an UNMEASURED self-consistency (zero value) must not be read as "low".
+	if d := g.EvaluateWithSignals(Evidence{}, grounded, []GateSignals{{SelfConsistency: 0}}).Hypotheses[0].Disposition; d != DispAccept {
+		t.Fatalf("unmeasured self-consistency must not block, got %s", d)
+	}
+}
+
+func TestGateSignalsNeverPromoteUngrounded(t *testing.T) {
+	r := regWith(t)
+	// ungrounded, allow-listed kind, every positive signal maxed: still not accept.
+	p := Proposal{Hypotheses: []Hypothesis{{Kind: "technique", Claim: "x", Confidence: "HIGH"}}}
+	sig := []GateSignals{{SelfConsistency: 1.0, Novelty: 0.0, CalibratedConfidence: "HIGH"}}
+	if d := NewGate(r).EvaluateWithSignals(Evidence{}, p, sig).Hypotheses[0].Disposition; d == DispAccept {
+		t.Fatal("no positive signal may promote an ungrounded hypothesis to accept")
+	}
+}
+
+func TestGateSignalsRefutedUngroundedDrops(t *testing.T) {
+	r := regWith(t)
+	// refuted + ungrounded drops even at HIGH confidence: the verifier kills it.
+	p := Proposal{Hypotheses: []Hypothesis{{Kind: "capability", Claim: "x", Confidence: "HIGH"}}}
+	got := NewGate(r).EvaluateWithSignals(Evidence{}, p, []GateSignals{{Refuted: true}}).Hypotheses[0].Disposition
+	if got != DispDrop {
+		t.Fatalf("refuted+ungrounded should drop, got %s", got)
+	}
+}

@@ -81,7 +81,11 @@ func TestHTTPProviderRoundTrip(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := NewCloudProvider(ts.URL, "test-model")
+	// the LOCAL provider sends the full defanged evidence (loopback httptest URL).
+	p, err := NewLocalProvider(ts.URL, "test-model")
+	if err != nil {
+		t.Fatalf("local provider (loopback httptest): %v", err)
+	}
 	raw, err := p.Analyze(context.Background(), Evidence{SubmissionID: "s", Items: []EvidenceItem{{Detail: "x"}}})
 	if err != nil {
 		t.Fatalf("http provider: %v", err)
@@ -124,6 +128,37 @@ func TestHTTPProviderErrors(t *testing.T) {
 	defer empty.Close()
 	if _, err := NewCloudProvider(empty.URL, "m").Analyze(context.Background(), Evidence{}); err == nil {
 		t.Fatal("empty choices must error")
+	}
+}
+
+func TestCloudProviderMinimizesEgress(t *testing.T) {
+	var body string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		b, _ := io.ReadAll(req.Body)
+		body = string(b)
+		env := chatResponse{Choices: []struct {
+			Message chatMessage `json:"message"`
+		}{{Message: chatMessage{Content: `{"summary":"x"}`}}}}
+		_ = json.NewEncoder(w).Encode(env)
+	}))
+	defer ts.Close()
+
+	ev := Evidence{
+		SubmissionID: "sub-secret-id", SHA256: "deadbeefdeadbeef", FileType: "pebin", Verdict: "MALICIOUS",
+		Items: []EvidenceItem{{Engine: "mal-floss", Type: "decoded-string", Detail: "beacon acme-secret-c2-host", Verdict: "UNKNOWN", Path: "outer.zip!inner.exe"}},
+	}
+	if _, err := NewCloudProvider(ts.URL, "m").Analyze(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	// the egress gate withholds hostile-derived free text AND sample identity.
+	for _, leaked := range []string{"acme-secret-c2-host", "outer.zip", "sub-secret-id", "deadbeefdeadbeef"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("cloud egress leaked %q: %s", leaked, body)
+		}
+	}
+	// but the structured fields reasoning needs still cross.
+	if !strings.Contains(body, "mal-floss") || !strings.Contains(body, "MALICIOUS") {
+		t.Fatalf("cloud egress dropped needed structured fields: %s", body)
 	}
 }
 

@@ -27,6 +27,10 @@ func TestAIPlaneEnrichAccepts(t *testing.T) {
 	if hs.Outcome != "gated" || hs.Accepted != 1 || hs.EvidenceHash == "" || hs.ProposalHash == "" {
 		t.Fatalf("handshake not recorded correctly: %+v", hs)
 	}
+	// retrieval provenance: the ledger records which fact the grounding rested on.
+	if len(hs.CitedFactIDs) != 1 || hs.CitedFactIDs[0] != f.ID || len(hs.RetrievalTiers) != 1 || hs.RetrievalTiers[0] != "L0" {
+		t.Fatalf("retrieval provenance not recorded: %+v", hs)
+	}
 	if err := plane.Ledger().Verify(); err != nil {
 		t.Fatalf("ledger must verify: %v", err)
 	}

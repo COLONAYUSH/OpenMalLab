@@ -33,8 +33,13 @@ type Handshake struct {
 	Outcome      string `json:"outcome"`                 // gated | rejected | provider-error
 	NeedsHuman   bool   `json:"needs_human"`
 	Accepted     int    `json:"accepted"` // count of accepted (autonomous) hypotheses
-	PrevHash     string `json:"prev_hash"`
-	Hash         string `json:"hash"` // sha256 over this entry with Hash blanked
+	// retrieval provenance (design sec 09): which fact IDs the spine re-resolved and
+	// verified, and which tiers answered - so the audit trail records not just the
+	// outcome but the grounding it rested on.
+	CitedFactIDs   []string `json:"cited_fact_ids,omitempty"`
+	RetrievalTiers []string `json:"retrieval_tiers,omitempty"`
+	PrevHash       string   `json:"prev_hash"`
+	Hash           string   `json:"hash"` // sha256 over this entry with Hash blanked
 }
 
 // Ledger is an append-only, hash-chained log of handshakes, safe for concurrent
@@ -132,7 +137,7 @@ func (l *Ledger) Head() string {
 // so Seq and PrevHash are bound into it (which is what chains the entries).
 func hashHandshake(h Handshake) string {
 	h.Hash = ""
-	b, _ := json.Marshal(h) // Handshake is all scalars: Marshal cannot fail
+	b, _ := json.Marshal(h) // Handshake holds only strings/ints/bools/string-slices: Marshal cannot fail
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }

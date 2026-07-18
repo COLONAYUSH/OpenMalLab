@@ -25,10 +25,31 @@ package aiplane
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/knowledge"
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
 )
+
+// gate thresholds for the non-grounding axes. deliberately conservative: they can
+// only ADD a reason to stop, never create acceptance.
+const (
+	noveltyEscalateThreshold = 0.85 // novelty >= this escalates (likely a new thing)
+	selfConsistencyFloor     = 0.5  // measured agreement below this is untrustworthy
+)
+
+// GateSignals are the non-grounding axes from the design (sec 06), computed by the
+// TRUSTED roster infrastructure - never by the model. the zero value means "not
+// measured" for every field, so a caller that supplies no signals gets exactly
+// the grounding+allow-list behavior. every signal can only BLOCK autonomy (add a
+// stop reason); none can promote - the gate stays inverted and downgrade-only.
+type GateSignals struct {
+	Refuted              bool    // the adversarial verifier refuted this hypothesis
+	SelfConsistency      float64 // 0..1 agreement across N samples; 0 = not measured
+	Novelty              float64 // 0..1 unlikeness to the graph; 0 = not measured; high => escalate
+	RetrievalTier        string  // strongest tier that grounded it ("L0"|"L0.5"|"L1"|"L2"|"")
+	CalibratedConfidence string  // confidence adjusted by historical accuracy; overrides self-report
+}
 
 // CitationVerifier resolves an agent's cited fact against the trusted L0
 // registry. *knowledge.Registry satisfies it; the gate depends on the interface
@@ -78,9 +99,10 @@ func EnrichmentVerdict(d Disposition) pipeline.Verdict {
 // GatedHypothesis is a hypothesis with the gate's decision and an audit trail.
 type GatedHypothesis struct {
 	Hypothesis
-	Disposition       Disposition
-	VerifiedCitations int      // citations that verified AND are curated (OKForVerdict)
-	Reasons           []string // why this disposition, for the audit ledger
+	Disposition         Disposition
+	VerifiedCitations   int      // count of citations that verified AND are curated (OKForVerdict)
+	VerifiedCitationIDs []string // the fact IDs that verified, for the audit ledger's provenance
+	Reasons             []string // why this disposition, for the audit ledger
 }
 
 // GateResult is the gate's decision over a whole proposal. it deliberately has
@@ -141,32 +163,80 @@ func NewGateWithPolicy(v CitationVerifier, autonomousKinds map[string]bool) *Gat
 // from the trusted evidence, never from the model, closing the confused-deputy
 // gap by construction.
 func (g *Gate) Evaluate(ev Evidence, p Proposal) GateResult {
+	return g.EvaluateWithSignals(ev, p, nil)
+}
+
+// EvaluateWithSignals is Evaluate with the non-grounding axes (sec 06) supplied
+// per hypothesis by the trusted roster: verifier refutation, self-consistency,
+// novelty, and calibrated confidence. signals[i] pairs with p.Hypotheses[i];
+// a short or nil slice means "no signals" for the rest. every signal is inverted
+// and downgrade-only - it can push an otherwise-autonomous hypothesis to a human,
+// but can never turn a non-autonomous one into an accept.
+func (g *Gate) EvaluateWithSignals(ev Evidence, p Proposal, signals []GateSignals) GateResult {
 	res := GateResult{
 		SubmissionID: ev.SubmissionID, // trusted source of truth
 		Summary:      p.Summary,       // already defanged by Validate
 		Leads:        append([]ProposedIOC(nil), p.IOCs...),
 	}
 
-	for _, h := range p.Hypotheses {
+	for i, h := range p.Hypotheses {
 		gh := GatedHypothesis{Hypothesis: h}
-		gh.VerifiedCitations = g.countCuratedVerified(h)
+		gh.VerifiedCitationIDs = g.verifiedCurated(h)
+		gh.VerifiedCitations = len(gh.VerifiedCitationIDs)
+		grounded := gh.VerifiedCitations > 0
 		allowed := g.autonomous[h.Kind]
 
+		var sig GateSignals
+		if i < len(signals) {
+			sig = signals[i]
+		}
+		// effective confidence: a calibrated value (from historical accuracy)
+		// OVERRIDES the model's self-report, and can only ever lower the outcome.
+		conf := h.Confidence
+		if sig.CalibratedConfidence != "" {
+			conf = sig.CalibratedConfidence
+		}
+		confident := conf == "HIGH" || conf == "MEDIUM"
+
+		// inverted: collect reasons to STOP autonomy. any one blocks acceptance;
+		// none can ever create it.
+		var stops []string
+		if sig.Refuted {
+			stops = append(stops, "verifier refuted")
+		}
+		if sig.Novelty >= noveltyEscalateThreshold {
+			stops = append(stops, fmt.Sprintf("novelty %.2f", sig.Novelty))
+		}
+		if sig.SelfConsistency > 0 && sig.SelfConsistency < selfConsistencyFloor {
+			stops = append(stops, fmt.Sprintf("self-consistency %.2f", sig.SelfConsistency))
+		}
+		if sig.CalibratedConfidence == "LOW" {
+			stops = append(stops, "calibrated LOW")
+		}
+
 		switch {
-		case gh.VerifiedCitations > 0 && allowed:
+		case grounded && allowed && len(stops) == 0:
 			gh.Disposition = DispAccept
 			gh.Reasons = append(gh.Reasons, fmt.Sprintf(
-				"grounded in %d verified curated citation(s); kind %q is autonomous",
+				"grounded in %d verified curated citation(s); kind %q autonomous; no stop signals",
 				gh.VerifiedCitations, h.Kind))
-		case gh.VerifiedCitations > 0:
+		case sig.Refuted && !grounded:
+			gh.Disposition = DispDrop
+			gh.Reasons = append(gh.Reasons, "refuted and ungrounded: dropped as unsupported")
+		case grounded:
 			gh.Disposition = DispEscalate
-			gh.Reasons = append(gh.Reasons, fmt.Sprintf(
-				"grounded (%d curated citation(s)) but kind %q is high-stakes: human review",
-				gh.VerifiedCitations, h.Kind))
-		case h.Confidence == "HIGH" || h.Confidence == "MEDIUM":
+			r := fmt.Sprintf("grounded (%d curated citation(s)) but not autonomous", gh.VerifiedCitations)
+			if !allowed {
+				r += fmt.Sprintf("; kind %q is high-stakes", h.Kind)
+			}
+			if len(stops) > 0 {
+				r += "; stop signals: " + strings.Join(stops, ", ")
+			}
+			gh.Reasons = append(gh.Reasons, r+": human review")
+		case confident || sig.Novelty >= noveltyEscalateThreshold:
 			gh.Disposition = DispEscalate
 			gh.Reasons = append(gh.Reasons,
-				"ungrounded (no verified curated citation) but model-confident: possible novel finding, human review")
+				"ungrounded but model-confident or novel: possible novel finding, human review")
 		default:
 			gh.Disposition = DispDrop
 			gh.Reasons = append(gh.Reasons,
@@ -197,18 +267,19 @@ func (g *Gate) Evaluate(ev Evidence, p Proposal) GateResult {
 	return res
 }
 
-// countCuratedVerified returns how many of a hypothesis's citations resolve
+// verifiedCurated returns the fact IDs of the hypothesis's citations that resolve
 // EXACTLY in L0 AND are curated (OKForVerdict). ingest-tier or mismatched
-// citations count for nothing: they are context, never grounding.
-func (g *Gate) countCuratedVerified(h Hypothesis) int {
+// citations contribute nothing: they are context, never grounding. the returned
+// IDs are the ledger's retrieval provenance.
+func (g *Gate) verifiedCurated(h Hypothesis) []string {
 	if g.verifier == nil {
-		return 0 // fail closed: nothing can verify, so nothing is grounded
+		return nil // fail closed: nothing can verify, so nothing is grounded
 	}
-	n := 0
+	var ids []string
 	for _, c := range h.Citations {
 		if g.verifier.VerifyCitation(c.FactID, knowledge.Kind(c.Kind), c.Key).OKForVerdict() {
-			n++
+			ids = append(ids, c.FactID)
 		}
 	}
-	return n
+	return ids
 }

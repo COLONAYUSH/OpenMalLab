@@ -68,6 +68,12 @@ func (a *AIPlane) Enrich(ctx context.Context, res pipeline.SubmissionResult) (Ga
 		if gh.Disposition == DispAccept {
 			h.Accepted++
 		}
+		h.CitedFactIDs = append(h.CitedFactIDs, gh.VerifiedCitationIDs...)
+	}
+	// any verified citation is an L0 curated exact-key resolution: record the tier
+	// so the provenance is explicit even before the roster reports richer tiers.
+	if len(h.CitedFactIDs) > 0 {
+		h.RetrievalTiers = []string{"L0"}
 	}
 	return gr, a.ledger.Append(h), nil
 }

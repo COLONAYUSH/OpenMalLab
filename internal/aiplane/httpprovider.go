@@ -22,10 +22,11 @@ import (
 
 // HTTPProvider talks to an OpenAI-compatible /v1/chat/completions endpoint.
 type HTTPProvider struct {
-	baseURL string
-	model   string
-	client  *http.Client
-	system  string
+	baseURL  string
+	model    string
+	client   *http.Client
+	system   string
+	minimize bool // cloud egress gate: send only minimized evidence, never raw hostile bytes
 }
 
 // NewLocalProvider builds a provider for a LOCAL, OpenAI-compatible model server
@@ -45,7 +46,34 @@ func NewLocalProvider(baseURL, model string) (*HTTPProvider, error) {
 // analyst talks to the outside world. the operator remains responsible for egress
 // allow-listing at the network layer; this constructor is the code-level opt-in.
 func NewCloudProvider(baseURL, model string) *HTTPProvider {
-	return newHTTP(baseURL, model)
+	p := newHTTP(baseURL, model)
+	p.minimize = true // a cloud model only ever sees minimized, redacted evidence
+	return p
+}
+
+// minimizeEvidence is the cloud egress gate (design sec 10/11): a cloud model only
+// receives the structured, minimized fields reasoning needs - NEVER the raw,
+// hostile-derived free text (detail/path) and never the sample identity
+// (submission id / sha256). local providers send the full, defanged evidence.
+func minimizeEvidence(ev Evidence) Evidence {
+	m := Evidence{
+		FileType:   ev.FileType,
+		Verdict:    ev.Verdict,
+		Score:      ev.Score,
+		Confidence: ev.Confidence,
+		Incomplete: ev.Incomplete,
+	}
+	for _, it := range ev.Items {
+		m.Items = append(m.Items, EvidenceItem{
+			Engine:     it.Engine,
+			Type:       it.Type,
+			Attck:      it.Attck,
+			Verdict:    it.Verdict,
+			Confidence: it.Confidence,
+			// Detail and Path (hostile-derived bytes) are withheld from cloud egress
+		})
+	}
+	return m
 }
 
 func newHTTP(baseURL, model string) *HTTPProvider {
@@ -101,7 +129,11 @@ type chatResponse struct {
 // model cannot exhaust memory; whatever content comes back is returned raw for
 // Validate to judge.
 func (h *HTTPProvider) Analyze(ctx context.Context, ev Evidence) ([]byte, error) {
-	evJSON, err := json.Marshal(ev)
+	payload := ev
+	if h.minimize {
+		payload = minimizeEvidence(ev) // cloud egress: strip hostile bytes + identity
+	}
+	evJSON, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("aiplane: marshal evidence: %w", err)
 	}
