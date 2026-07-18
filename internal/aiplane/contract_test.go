@@ -56,8 +56,40 @@ func TestEvidenceFromCapsItems(t *testing.T) {
 	for i := 0; i < maxEvidenceItems+100; i++ {
 		res.Findings = append(res.Findings, pipeline.Finding{Engine: "e", Type: "t", Detail: "d"})
 	}
-	if got := len(EvidenceFrom(res).Items); got != maxEvidenceItems {
+	ev := EvidenceFrom(res)
+	if got := len(ev.Items); got != maxEvidenceItems {
 		t.Fatalf("items not capped: %d", got)
+	}
+	if !ev.Incomplete {
+		t.Fatal("a truncated projection must be marked Incomplete, not presented as complete")
+	}
+}
+
+func TestValidatePreservesCitationKey(t *testing.T) {
+	// a citation is a lookup handle: a C2 url key must survive Validate BYTE-FOR-BYTE
+	// (not defanged), else it resolves to a different fact id and grounding breaks.
+	p := Proposal{Hypotheses: []Hypothesis{{
+		Kind: "ioc-context", Claim: "beacons to a known c2", Confidence: "LOW",
+		Citations: []Citation{{FactID: "kf_abc", Kind: "c2", Key: "http://203.0.113.5/gate.php"}},
+	}}}
+	got, err := Validate(mustJSON(t, p))
+	if err != nil {
+		t.Fatalf("rejected: %v", err)
+	}
+	if k := got.Hypotheses[0].Citations[0].Key; k != "http://203.0.113.5/gate.php" {
+		t.Fatalf("citation key was mutated (grounding would break): %q", k)
+	}
+}
+
+func TestValidateRejectsControlInCitation(t *testing.T) {
+	// a control byte in a citation field is rejected, not silently cleaned: a real
+	// curated key never carries one, so cleaning would forge a non-matching handle.
+	p := Proposal{Hypotheses: []Hypothesis{{
+		Kind: "ioc-context", Claim: "c", Confidence: "LOW",
+		Citations: []Citation{{FactID: "kf_abc", Kind: "c2", Key: "ke\x00y"}},
+	}}}
+	if _, err := Validate(mustJSON(t, p)); err == nil {
+		t.Fatal("a citation key with a control byte must fail the whole proposal")
 	}
 }
 
@@ -88,15 +120,17 @@ func TestValidateHappyPath(t *testing.T) {
 
 func TestValidateRejects(t *testing.T) {
 	cases := map[string][]byte{
-		"empty":          []byte(""),
-		"empty object":   []byte("{}"),
-		"null":           []byte("null"),
-		"malformed json": []byte("{not json"),
-		"unknown field":  []byte(`{"summary":"x","evil":1}`),
-		"trailing data":  []byte(`{"summary":"x"}{"more":1}`),
-		"oversize":       append([]byte(`{"summary":"`), append(make([]byte, maxProposalBytes), []byte(`"}`)...)...),
-		"missing kind":   mustJSON(t, Proposal{Hypotheses: []Hypothesis{{Claim: "c", Confidence: "LOW"}}}),
-		"missing claim":  mustJSON(t, Proposal{Hypotheses: []Hypothesis{{Kind: "family", Confidence: "LOW"}}}),
+		"empty":                []byte(""),
+		"empty object":         []byte("{}"),
+		"null":                 []byte("null"),
+		"control-only summary": []byte(`{"summary":"\u0000\u202e"}`),
+		"vs-only summary":      []byte(`{"summary":"\ufe0f\ufe0f"}`),
+		"malformed json":       []byte("{not json"),
+		"unknown field":        []byte(`{"summary":"x","evil":1}`),
+		"trailing data":        []byte(`{"summary":"x"}{"more":1}`),
+		"oversize":             append([]byte(`{"summary":"`), append(make([]byte, maxProposalBytes), []byte(`"}`)...)...),
+		"missing kind":         mustJSON(t, Proposal{Hypotheses: []Hypothesis{{Claim: "c", Confidence: "LOW"}}}),
+		"missing claim":        mustJSON(t, Proposal{Hypotheses: []Hypothesis{{Kind: "family", Confidence: "LOW"}}}),
 		"malformed citation": mustJSON(t, Proposal{Hypotheses: []Hypothesis{{
 			Kind: "family", Claim: "c", Confidence: "LOW", Citations: []Citation{{FactID: "kf_x", Kind: "family"}},
 		}}}),
@@ -164,12 +198,14 @@ func TestDefangCaseInsensitiveSchemes(t *testing.T) {
 }
 
 func TestDefangStripsFormatAndBidi(t *testing.T) {
-	// RLO (Trojan-source), zero-width, BOM, line/paragraph separators.
+	// RLO (Trojan-source), zero-width, BOM, line/paragraph separators, and
+	// variation selectors (U+FE0F, U+E0100 - the emoji/tag data-smuggling carrier).
 	hostile := "a" + string(rune(0x202e)) + "b" + string(rune(0x200b)) + "c" +
-		string(rune(0xfeff)) + string(rune(0x2028)) + string(rune(0x2029)) + "d"
+		string(rune(0xfeff)) + string(rune(0x2028)) + string(rune(0x2029)) +
+		string(rune(0xfe0f)) + string(rune(0xe0100)) + "d"
 	out := defang(hostile)
 	if out != "abcd" {
-		t.Fatalf("format/bidi chars survived defang: %q", out)
+		t.Fatalf("format/bidi/variation-selector chars survived defang: %q", out)
 	}
 }
 

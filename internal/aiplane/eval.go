@@ -133,6 +133,20 @@ func Corpus() []Case {
 			ExpectDispositions: []Disposition{DispAccept},
 		},
 		{
+			// regression lock: a C2-url key (contains "://") must survive Validate
+			// byte-for-byte and ground the citation - it must NOT be defanged into a
+			// non-matching handle.
+			Name:    "grounded-c2-url-accepts",
+			Curated: []FactSpec{{Kind: knowledge.KindC2, Key: "http://203.0.113.5/gate.php", Label: "known C2"}},
+			Build: func(cite func(knowledge.Kind, string) Citation) []byte {
+				c := cite(knowledge.KindC2, "http://203.0.113.5/gate.php")
+				return jsonProposal(fmt.Sprintf(
+					`{"summary":"beacon","hypotheses":[{"kind":"ioc-context","claim":"talks to a known c2","confidence":"LOW","citations":[{"fact_id":%q,"kind":"c2","key":"http://203.0.113.5/gate.php"}]}]}`,
+					c.FactID))
+			},
+			ExpectDispositions: []Disposition{DispAccept},
+		},
+		{
 			Name:    "grounded-high-stakes-escalates",
 			Curated: family,
 			Build: func(cite func(knowledge.Kind, string) Citation) []byte {

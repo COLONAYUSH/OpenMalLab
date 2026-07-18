@@ -1,12 +1,17 @@
 package aiplane
 
 // the handshake ledger is a tamper-evident record of every AI-plane interaction.
-// each entry is hash-chained to the one before it, so the audit trail cannot be
-// silently edited after the fact: change any field of any past handshake and its
-// hash - and every hash after it - stops matching. this is what lets an operator
-// trust the record of what the untrusted model was shown and what the gate did
-// with its answer, long after the fact, even if the store beneath is not itself
-// trusted.
+// each entry is hash-chained to the one before it: change any field of any past
+// handshake and its hash - and every hash after it - stops matching, so in-memory
+// Verify() catches accidental corruption and any edit that is not also re-sealed.
+//
+// the chain is UNKEYED, so on its own it cannot defend a PERSISTED ledger against
+// an actor with write access to the backing store, who could tail-truncate it or
+// re-seal a wholly-rewritten chain and still pass Verify(). a persistence layer
+// MUST therefore reload through VerifyAgainst(count, head), binding the check to
+// an out-of-band anchor (the entry count and head hash, recorded where the store
+// writer cannot forge them - the durable Temporal history, or an operator
+// signature). that is what lets an operator trust the record long after the fact.
 
 import (
 	"crypto/sha256"
@@ -79,6 +84,32 @@ func (l *Ledger) Verify() error {
 			return fmt.Errorf("ledger: entry %d hash mismatch (tampered)", i)
 		}
 		prev = h.Hash
+	}
+	// the recorded head must equal the last entry's hash: catches a partial edit
+	// that truncates entries without also rewriting the head.
+	if prev != l.lastHash {
+		return fmt.Errorf("ledger: head does not match the last entry (chain truncated or head forged)")
+	}
+	return nil
+}
+
+// VerifyAgainst is the verification a persistence layer MUST use after reloading
+// the ledger from an untrusted store. plain Verify proves only internal
+// consistency, which an unkeyed chain a store-writer fully controls can fake by
+// tail-truncating or re-sealing. binding the check to an out-of-band anchor - the
+// entry count and head hash, recorded where the store writer cannot forge them -
+// closes that: a truncated or rewritten chain no longer matches the anchor.
+func (l *Ledger) VerifyAgainst(expectedCount int, expectedHead string) error {
+	if err := l.Verify(); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.entries) != expectedCount {
+		return fmt.Errorf("ledger: entry count %d != anchored %d (truncated or extended)", len(l.entries), expectedCount)
+	}
+	if l.lastHash != expectedHead {
+		return fmt.Errorf("ledger: head %q != anchored head (tampered)", l.lastHash)
 	}
 	return nil
 }

@@ -329,5 +329,6 @@ type SubmissionResult struct {
 	Score        int        `json:"score"`      // 0-100 triage priority, confidence-weighted
 	Confidence   Confidence `json:"confidence"` // aggregate confidence in the verdict
 	Findings     []Finding  `json:"findings"`
-	Incomplete   bool       `json:"incomplete"` // set if anything was truncated or an engine failed (fail-closed)
+	Incomplete   bool       `json:"incomplete"`             // set if anything was truncated or an engine failed (fail-closed)
+	NeedsReview  bool       `json:"needs_review,omitempty"` // a human should look: set by the AI-plane escalation seam, never by an engine
 }

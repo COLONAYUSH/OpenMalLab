@@ -89,7 +89,16 @@ platform runs deterministic-only. This is the air-gapped default.
 ## What must remain true (verified by the eval corpus)
 
 `aiplane.Corpus()` is the standing regression gate. Any change here must keep it
-green: grounded+allow-listed accepts, high-stakes and confident-ungrounded
-escalations, ungrounded noise dropped, ingest-only treated as context, forged
-citations refused grounding, and every hostile input failing closed at the
-contract. The handshake ledger must `Verify()` after every run.
+green: grounded+allow-listed accepts (including a C2-url key, which must survive
+the contract byte-for-byte and NOT be defanged into a non-matching handle),
+high-stakes and confident-ungrounded escalations, ungrounded noise dropped,
+ingest-only treated as context, forged citations refused grounding, and every
+hostile input failing closed at the contract.
+
+The handshake ledger must `Verify()` after every run. When the ledger is
+persisted, the reload MUST use `VerifyAgainst(count, head)` with the entry count
+and head hash held in an out-of-band anchor (the durable Temporal history or an
+operator signature): the chain is unkeyed, so plain `Verify()` alone cannot catch
+a store-writer who tail-truncates or wholesale re-seals it. The human-review flag
+rides back on `pipeline.SubmissionResult.NeedsReview` (set only by this seam,
+never by an engine).

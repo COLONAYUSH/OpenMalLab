@@ -84,6 +84,7 @@ func EvidenceFrom(res pipeline.SubmissionResult) Evidence {
 	// worker could otherwise smuggle control bytes or live links into evidence.
 	for i := range res.Findings {
 		if i >= maxEvidenceItems {
+			ev.Incomplete = true // a truncated projection must never look complete to the model
 			break
 		}
 		f := res.Findings[i]
@@ -163,12 +164,6 @@ func Validate(raw []byte) (Proposal, error) {
 	if len(p.IOCs) > maxIOCs {
 		return Proposal{}, fmt.Errorf("aiplane: too many iocs (%d)", len(p.IOCs))
 	}
-	// a proposal must contain SOMETHING: a wholly-empty object (or `null`) is not
-	// a valid "nothing to report" - it fails closed as an error, so a caller
-	// cannot mistake a degenerate decode for a usable analysis.
-	if p.Summary == "" && len(p.Hypotheses) == 0 && len(p.IOCs) == 0 && !p.NeedsReview {
-		return Proposal{}, fmt.Errorf("aiplane: empty proposal")
-	}
 
 	out := Proposal{
 		Summary:      clean(p.Summary, maxSummaryLen),
@@ -188,10 +183,15 @@ func Validate(raw []byte) (Proposal, error) {
 			return Proposal{}, fmt.Errorf("aiplane: hypothesis missing kind or claim")
 		}
 		for _, c := range h.Citations {
-			// a citation must be well-formed; the gate then verifies it exists in
-			// L0. a malformed citation fails the whole proposal (fail-closed).
-			fid, kind, key := clean(c.FactID, maxFieldLen), clean(c.Kind, maxFieldLen), clean(c.Key, maxFieldLen)
-			if fid == "" || kind == "" || key == "" {
+			// a citation is a content-bound lookup handle the gate re-verifies
+			// against L0, so it must be passed BYTE-FOR-BYTE, never defanged:
+			// defanging a key (e.g. the "://" in a C2 url) would change the fact id
+			// it resolves to and silently break grounding for a genuinely curated
+			// fact. we only bound and reject it - a hostile citation fails closed.
+			fid, ok1 := citationToken(c.FactID, maxFieldLen)
+			kind, ok2 := citationToken(c.Kind, maxFieldLen)
+			key, ok3 := citationToken(c.Key, maxFieldLen)
+			if !ok1 || !ok2 || !ok3 {
 				return Proposal{}, fmt.Errorf("aiplane: malformed citation")
 			}
 			ch.Citations = append(ch.Citations, Citation{FactID: fid, Kind: kind, Key: key})
@@ -204,6 +204,14 @@ func Validate(raw []byte) (Proposal, error) {
 			return Proposal{}, fmt.Errorf("aiplane: malformed ioc")
 		}
 		out.IOCs = append(out.IOCs, ProposedIOC{Type: t, Value: v})
+	}
+	// a proposal must contain SOMETHING after cleaning: a wholly-empty object, a
+	// null, or a summary that defangs away to nothing is not a valid "nothing to
+	// report" - it fails closed. checked on the CLEANED output (not the raw decode)
+	// so a control/format-only summary cannot slip past and be logged as a usable
+	// analysis in the audit ledger.
+	if out.Summary == "" && len(out.Hypotheses) == 0 && len(out.IOCs) == 0 && !out.NeedsReview {
+		return Proposal{}, fmt.Errorf("aiplane: empty proposal")
 	}
 	return out, nil
 }
@@ -233,14 +241,41 @@ func clean(s string, maxBytes int) string {
 	return b
 }
 
+// citationToken bounds a citation field WITHOUT defanging it. a citation is a
+// content-bound handle the gate re-verifies against L0 byte-for-byte, so it must
+// not be mutated: it is rejected (not cleaned) if empty, over-long, not valid
+// UTF-8, or carrying a control byte (a real curated key never has one). scheme
+// tokens ("://") and format chars are preserved, because a legitimately curated
+// key may contain them (canonically, a C2 url).
+func citationToken(s string, maxBytes int) (string, bool) {
+	if s == "" || len(s) > maxBytes || !utf8.ValidString(s) || hasControlChars(s) {
+		return "", false
+	}
+	return s, true
+}
+
+// hasControlChars reports whether s carries a C0/C1 control or DEL - exactly the
+// bytes the L0 registry refuses in a key, so a citation carrying one could never
+// match a stored fact regardless.
+func hasControlChars(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return true
+		}
+	}
+	return false
+}
+
 // dangerScheme matches the dangerous scheme-only forms (no authority) that carry
 // no "://"; \b avoids mangling words like "metadata:". case-insensitive.
 var dangerScheme = regexp.MustCompile(`(?i)\b(javascript|data|vbscript|file):`)
 
 // defang makes a hostile-derived string inert for any consumer that renders or
 // logs it: it drops C0/C1 controls, DEL, Unicode format chars (bidi overrides,
-// zero-widths, BOM) and line/paragraph separators - all of which can inject
-// formatting, spoof rendered text (Trojan-source), or corrupt logs - and
+// zero-widths, BOM), line/paragraph separators, and variation selectors (the
+// carrier for emoji/tag ASCII-smuggling of hidden data) - all of which can inject
+// formatting, spoof rendered text (Trojan-source), hide payloads, or corrupt logs
+// - and
 // neutralizes live URL schemes generically and case-agnostically (any
 // scheme://authority, plus javascript:/data:/vbscript:/file:). it is a DLP /
 // inertness control, NOT the injection defense - that is the structured contract
@@ -250,7 +285,8 @@ func defang(s string) string {
 	b.Grow(len(s))
 	for _, r := range s {
 		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) ||
-			r == 0x2028 || r == 0x2029 || unicode.Is(unicode.Cf, r) {
+			r == 0x2028 || r == 0x2029 || unicode.Is(unicode.Cf, r) ||
+			unicode.Is(unicode.Variation_Selector, r) {
 			continue
 		}
 		b.WriteRune(r)
