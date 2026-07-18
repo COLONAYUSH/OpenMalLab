@@ -468,13 +468,22 @@ fn emit(r: &Report) {
 // neutralize hostile bytes in any string that will appear in the manifest:
 // printable, bounded. the manifest crosses the broker, but defense in depth is
 // free here.
+//
+// bound to 256 BYTES on a char boundary. entry names are attacker-controlled
+// multibyte UTF-8, and String::truncate panics when the index is not a char
+// boundary (a 300-byte multibyte name truncated at byte 256 lands mid-char and
+// crashes the worker), so build the bounded string char by char and stop before
+// a char would cross the budget. one crafted filename must never crash the
+// extractor and blind the whole archive subtree.
 fn sanitize(s: &str) -> String {
-    let mut out: String = s
-        .chars()
-        .map(|c| if c.is_control() { '.' } else { c })
-        .collect();
-    if out.len() > 256 {
-        out.truncate(256);
+    const MAX_BYTES: usize = 256;
+    let mut out = String::with_capacity(MAX_BYTES.min(s.len()));
+    for c in s.chars() {
+        let c = if c.is_control() { '.' } else { c };
+        if out.len() + c.len_utf8() > MAX_BYTES {
+            break;
+        }
+        out.push(c);
     }
     out
 }
@@ -562,6 +571,37 @@ mod tests {
             .iter()
             .any(|f| f.kind == "path-traversal-name" && f.verdict == "SUSPICIOUS"));
         assert_eq!(rep.verdict, "SUSPICIOUS");
+    }
+
+    #[test]
+    fn long_multibyte_entry_name_does_not_panic() {
+        // sanitize() once truncated by BYTES, which panics off a char boundary;
+        // one attacker-named entry (300 bytes of a 3-byte char) must not crash the
+        // extractor and blind the whole archive subtree.
+        let name = "\u{4e2d}".repeat(100); // 100 x U+4E2D = 300 utf-8 bytes
+        let z = zip_with(&[(name.as_str(), b"payload")]);
+        let (rep, out) = run(&z, Caps::default());
+        assert_eq!(
+            rep.children.len(),
+            1,
+            "the child must survive, not crash the worker"
+        );
+        assert!(out.join(&rep.children[0].sha256).exists());
+        assert!(
+            rep.children[0].name.len() <= 256,
+            "display name byte-bounded"
+        );
+    }
+
+    #[test]
+    fn sanitize_is_byte_bounded_and_panic_free() {
+        let s = "\u{4e2d}".repeat(100); // 300 bytes of a 3-byte char
+        let out = sanitize(&s);
+        // stops before crossing 256 bytes, on a char boundary: 85 chars = 255 bytes.
+        assert_eq!(out.len(), 255);
+        assert_eq!(out.chars().count(), 85);
+        // control chars are neutralized, short strings pass through.
+        assert_eq!(sanitize("a\u{0}b\u{1b}c"), "a.b.c");
     }
 
     #[test]
