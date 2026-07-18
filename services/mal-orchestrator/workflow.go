@@ -24,6 +24,13 @@ const (
 	// wasted work. keep the invariant: activity timeout > jail wall > tool timeout.
 	defaultActivityTimeout = 3 * time.Minute
 	heavyActivityTimeout   = 8 * time.Minute // covers floss (360s) + broker + slack
+
+	// per-submission finding-size budget. a wide archive (up to maxArtifacts
+	// nodes, each up to ~1000 findings) can otherwise produce a workflow result
+	// too large for Temporal's payload limit, so the run never records a verdict.
+	// we bound the SUMMED serialized size of findings, not the count, because a
+	// hostile detail can be up to the broker's 8 KiB, and stay well under 2 MiB.
+	maxFindingsBytes = 1 << 20
 )
 
 // workItem is one node of the artifact tree waiting to be analyzed. path is the
@@ -62,6 +69,13 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 	}
 	var a *Analyzer // nil receiver: activities resolve by name
 
+	// per-submission finding budget (see maxFindingsBytes): once the byte budget
+	// is spent, findings stop being appended (a marker + incomplete are emitted
+	// once), but verdict severity is still joined from every finding so the cap
+	// can never hide a MALICIOUS signal.
+	findingsBytes := 0
+	findingsCapped := false
+
 	// fold one engine's outcome into the submission: findings tagged with the
 	// artifact's breadcrumb, verdicts joined, any failure or gap floored to
 	// SUSPICIOUS + incomplete. never falls through to BENIGN.
@@ -81,14 +95,35 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 			return pipeline.EngineReport{}, false
 		}
 		for i := range rep.Findings {
-			rep.Findings[i].Path = path
-			res.Findings = append(res.Findings, rep.Findings[i])
+			f := rep.Findings[i]
 			// lift from each finding, not only the worker's self-reported top
 			// verdict: a buggy or compromised worker that emits a MALICIOUS
 			// finding under an UNKNOWN top verdict must still escalate the
-			// submission. the broker validates each verdict independently, so
-			// trusted code joins them itself rather than trusting the rollup.
-			res.Verdict = pipeline.Max(res.Verdict, rep.Findings[i].Verdict)
+			// submission. this runs for EVERY finding, before the size cap, so
+			// the cap can never hide severity. the broker validates each verdict
+			// independently, so trusted code joins them rather than trusting the
+			// rollup.
+			res.Verdict = pipeline.Max(res.Verdict, f.Verdict)
+			// bound the summed finding size so the workflow result fits Temporal.
+			sz := len(f.Detail) + len(path) + len(f.Type) + len(f.Attck) + len(f.Engine) + 48
+			if findingsBytes+sz > maxFindingsBytes {
+				if !findingsCapped {
+					findingsCapped = true
+					res.Incomplete = true
+					res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
+					res.Findings = append(res.Findings, pipeline.Finding{
+						Engine:     "mal-orchestrator",
+						Type:       "findings-cap",
+						Detail:     "per-submission finding-size cap reached; further findings omitted (the verdict still reflects them)",
+						Verdict:    pipeline.Suspicious,
+						Confidence: pipeline.ConfLow,
+					})
+				}
+				continue
+			}
+			f.Path = path
+			res.Findings = append(res.Findings, f)
+			findingsBytes += sz
 		}
 		res.Verdict = pipeline.Max(res.Verdict, rep.Verdict)
 		if rep.Incomplete {

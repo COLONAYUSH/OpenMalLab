@@ -31,8 +31,16 @@ import (
 
 // maxIngestBytes bounds a single extracted child the orchestrator will pull
 // into the vault. the extractor already caps entries, but the orchestrator
-// trusts nothing the worker did; this is its own limit.
-const maxIngestBytes = 128 << 20
+// trusts nothing the worker did; this is its own limit. a var (not const) only
+// so tests can shrink it to exercise the oversize path.
+var maxIngestBytes int64 = 128 << 20
+
+// maxIngestTotalBytes bounds the SUMMED size of children one extraction can pull
+// into the shared vault. the honest extractor self-limits to 256 MiB total, but
+// a compromised one could stage up to ~1000 x 128 MiB; without an aggregate cap
+// that is ~128 GiB into the shared disk every submission depends on. generous
+// over the honest total, but bounded.
+const maxIngestTotalBytes int64 = 512 << 20
 
 // nobodyUID is the unprivileged uid every jailed worker runs as; the per-run
 // staging dir is owned by it so the extractor can write its children.
@@ -222,7 +230,23 @@ func (a *Analyzer) ExtractActivity(ctx context.Context, in pipeline.SubmissionIn
 	// ingest: re-hash every staged child and content-address it into the vault.
 	// the manifest's sha is a claim; the bytes are the truth.
 	var verified []pipeline.Child
+	var ingestedTotal int64
 	for _, c := range br.Children {
+		if ingestedTotal >= maxIngestTotalBytes {
+			// aggregate cap: a compromised extractor cannot turn one submission
+			// into unbounded writes to the shared vault. report the truncation,
+			// never silently stop.
+			rep.Incomplete = true
+			rep.Findings = append(rep.Findings, pipeline.Finding{
+				Engine:     "mal-extract",
+				Type:       "ingest-cap",
+				Detail:     "aggregate extracted-child size cap reached; remaining children not ingested",
+				Verdict:    pipeline.Suspicious,
+				Confidence: pipeline.ConfLow,
+			})
+			rep.Verdict = pipeline.Max(rep.Verdict, pipeline.Suspicious)
+			break
+		}
 		size, err := a.ingestChild(stageDir, c.SHA256)
 		if err != nil {
 			rep.Incomplete = true
@@ -238,6 +262,7 @@ func (a *Analyzer) ExtractActivity(ctx context.Context, in pipeline.SubmissionIn
 			rep.Verdict = pipeline.Max(rep.Verdict, pipeline.Suspicious)
 			continue
 		}
+		ingestedTotal += int64(size)
 		verified = append(verified, pipeline.Child{SHA256: c.SHA256, Size: size, Name: c.Name})
 	}
 	rep.Children = verified

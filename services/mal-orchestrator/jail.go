@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -107,13 +108,19 @@ func outMount(volume, subpath string) mount.Mount {
 
 // cappedBuffer keeps the first max bytes, flags anything beyond, and always
 // reports the full write so the stream drains instead of stalling the jail.
+// the mutex matters: on the drain-timeout fallback the reader may snapshot this
+// while the StdCopy goroutine is still writing, and bytes.Buffer is not safe for
+// concurrent use.
 type cappedBuffer struct {
+	mu        sync.Mutex
 	buf       bytes.Buffer
 	max       int
 	truncated bool
 }
 
 func (c *cappedBuffer) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if room := c.max - c.buf.Len(); room > 0 {
 		if len(p) > room {
 			c.buf.Write(p[:room])
@@ -125,6 +132,16 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 		c.truncated = true
 	}
 	return len(p), nil
+}
+
+// snapshot copies the captured bytes and the truncated flag under the lock.
+// runJailed's 10s drain fallback can call this while StdCopy is still writing,
+// so the read must be synchronized with Write and must copy, never alias the
+// live buffer.
+func (c *cappedBuffer) snapshot() ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.buf.Bytes()...), c.truncated
 }
 
 type jailSpec struct {
@@ -256,17 +273,22 @@ func runJailed(ctx context.Context, docker *client.Client, spec jailSpec) (*jail
 		return nil, fmt.Errorf("jail wait: %w", werr)
 	}
 
-	// jail exited: let the stream drain to eof, bounded.
+	// jail exited: let the stream drain to eof, bounded. on the timeout branch
+	// the StdCopy goroutine may still be writing the buffers, so read them only
+	// through snapshot() (mutex-guarded, copies) rather than aliasing the live
+	// bytes.Buffer.
 	select {
 	case <-copyDone:
 	case <-time.After(10 * time.Second):
 	}
 
+	outBytes, outTruncated := stdout.snapshot()
+	errBytes, _ := stderr.snapshot()
 	return &jailResult{
-		stdout:          stdout.buf.Bytes(),
-		stderr:          stderr.buf.Bytes(),
+		stdout:          outBytes,
+		stderr:          errBytes,
 		exitCode:        exit,
-		stdoutTruncated: stdout.truncated,
+		stdoutTruncated: outTruncated,
 	}, nil
 }
 
