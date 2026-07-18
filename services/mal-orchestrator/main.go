@@ -16,6 +16,9 @@ import (
 	dclient "github.com/docker/docker/client"
 	tclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
+
+	"github.com/COLONAYUSH/OpenMalLab/internal/aiplane"
+	"github.com/COLONAYUSH/OpenMalLab/internal/knowledge"
 )
 
 // TaskQueue is the queue the workflow and activities run on.
@@ -106,11 +109,27 @@ func main() {
 		log.Printf("swept %d leftover vault temp files", n)
 	}
 
+	// optional AI-analyst plane (air-gapped by default). only wired when a local
+	// model URL is configured; even then enrichment is async and caged, run by the
+	// separate EnrichmentWorkflow that never touches the deterministic verdict.
+	if url := os.Getenv("MAL_MODEL_URL"); url != "" {
+		prov, err := aiplane.NewLocalProvider(url, envOr("MAL_MODEL_NAME", "local"))
+		if err != nil {
+			log.Fatalf("MAL_MODEL_URL: %v", err)
+		}
+		// unseeded L0: until the curated corpora are loaded no citation grounds, so
+		// every hypothesis escalates or drops - safe (no false autonomy).
+		reg := knowledge.NewRegistry(knowledge.NewMemStore())
+		a.aiplane = aiplane.NewAIPlane(prov, aiplane.NewGate(reg))
+		log.Printf("AI-analyst plane enabled (model=%s); enrichment is async and caged", url)
+	}
+
 	w := worker.New(tc, TaskQueue, worker.Options{
 		// each activity holds a jail (512m, 1 cpu); keep the fleet bounded.
 		MaxConcurrentActivityExecutionSize: 4,
 	})
 	w.RegisterWorkflow(SubmissionWorkflow)
+	w.RegisterWorkflow(EnrichmentWorkflow)
 	w.RegisterActivity(a)
 
 	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s capa=%s floss=%s broker=%s)",

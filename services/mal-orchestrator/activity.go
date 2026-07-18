@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/COLONAYUSH/OpenMalLab/internal/aiplane"
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
@@ -73,6 +74,10 @@ type Analyzer struct {
 	capaScratch   string
 	flossMemBytes int64
 	flossScratch  string
+
+	// optional AI-analyst plane. nil in the air-gapped default (no model wired);
+	// when set, EnrichmentWorkflow runs it as a caged, async, post-verdict step.
+	aiplane *aiplane.AIPlane
 }
 
 // the sha is about to be spliced into an engine api mount spec; it gets
