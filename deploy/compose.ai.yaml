@@ -44,9 +44,14 @@ services:
     profiles: ["bootstrap"]
     volumes:
       - openmallab-models:/root/.ollama
+      # optional corporate TLS-interception CA (deploy/certs/*.pem, git-ignored).
+      # empty on a clean network -> the block below is a harmless no-op.
+      - ./certs:/certs:ro
     networks: [default]
     entrypoint: ["/bin/sh", "-c"]
-    command: ["ollama serve & until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull ${MAL_MODEL_NAME:-llama3.2:3b} && echo 'model provisioned into openmallab-models'"]
+    # trust the OS bundle plus any corp CA (so `ollama pull` works behind a proxy),
+    # then serve + pull the model into the volume. clean network: only the OS bundle.
+    command: ["touch /tmp/ca.pem; [ -f /etc/ssl/certs/ca-certificates.crt ] && cat /etc/ssl/certs/ca-certificates.crt >> /tmp/ca.pem; cat /certs/*.pem >> /tmp/ca.pem 2>/dev/null || true; export SSL_CERT_FILE=/tmp/ca.pem; ollama serve & until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull ${MAL_MODEL_NAME:-llama3.2:3b} && echo 'model provisioned into openmallab-models'"]
     restart: "no"
 
   mal-agents:
