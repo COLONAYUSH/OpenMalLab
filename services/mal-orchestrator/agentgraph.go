@@ -170,11 +170,19 @@ type GateInput struct {
 	Signals  []aiplane.GateSignals
 }
 
+// EscalatedItem is one hypothesis the gate sent to a human, with the model's
+// claimed confidence - so the HITL outcome can be recorded back into calibration
+// (was a HIGH claim actually right?) and graduation (per-category track record).
+type EscalatedItem struct {
+	Kind       string
+	Confidence string
+}
+
 type GateOutcome struct {
-	Findings       []pipeline.Finding
-	NeedsReview    bool
-	EscalatedKinds []string // categories the gate sent to a human (for the HITL task)
-	Reasons        []string
+	Findings    []pipeline.Finding
+	NeedsReview bool
+	Escalated   []EscalatedItem
+	Reasons     []string
 }
 
 // RunRosterActivity orchestrates the untrusted roster and assembles a proposal.
@@ -260,6 +268,11 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 	signals := make([]aiplane.GateSignals, len(hyps))
 	for i, h := range hyps {
 		sig := aiplane.GateSignals{Novelty: novelty}
+		// calibration (downgrade-only): a category whose confident claims have been
+		// historically wrong gets its self-report recalibrated down before the gate.
+		if a.calibration != nil {
+			sig.CalibratedConfidence = a.calibration.Calibrated(h.Kind, h.Confidence)
+		}
 		raw, err := a.agents.call(ctx, "verifier", agentReq{Evidence: ev, Claim: h.Claim})
 		if err != nil {
 			sig.Refuted = true
@@ -303,13 +316,13 @@ func (a *Analyzer) GateActivity(ctx context.Context, in GateInput) (GateOutcome,
 	gr := a.gate.EvaluateWithSignals(ev, prop, in.Signals)
 	h.Outcome = "gated"
 	h.NeedsHuman = gr.NeedsHuman
-	var escalated []string
+	var escalated []EscalatedItem
 	for _, gh := range gr.Hypotheses {
 		switch gh.Disposition {
 		case aiplane.DispAccept:
 			h.Accepted++
 		case aiplane.DispEscalate:
-			escalated = append(escalated, gh.Kind)
+			escalated = append(escalated, EscalatedItem{Kind: gh.Kind, Confidence: gh.Confidence})
 		}
 		h.CitedFactIDs = append(h.CitedFactIDs, gh.VerifiedCitationIDs...)
 	}
@@ -317,7 +330,7 @@ func (a *Analyzer) GateActivity(ctx context.Context, in GateInput) (GateOutcome,
 		h.RetrievalTiers = []string{"L0"}
 	}
 	a.ledgerAppend(h)
-	return GateOutcome{Findings: gr.EnrichmentFindings(), NeedsReview: gr.NeedsHuman, EscalatedKinds: escalated, Reasons: gr.Reasons}, nil
+	return GateOutcome{Findings: gr.EnrichmentFindings(), NeedsReview: gr.NeedsHuman, Escalated: escalated, Reasons: gr.Reasons}, nil
 }
 
 // AgentGraphWorkflow is the async, post-verdict multi-agent enrichment. it drives
@@ -353,10 +366,14 @@ func AgentGraphWorkflow(ctx workflow.Context, res pipeline.SubmissionResult) (pi
 		// the analyst's decision signal or a long timeout. the deterministic verdict
 		// (and the capped enrichment) stand either way; the human resolves the
 		// escalation and, on approval, promotes the analysis facts to curated.
+		kinds := make([]string, 0, len(gate.Escalated))
+		for _, e := range gate.Escalated {
+			kinds = append(kinds, e.Kind)
+		}
 		review := ReviewRequest{
 			SubmissionID: res.SubmissionID,
 			Question:     "Review the AI-escalated findings for this submission.",
-			Kinds:        gate.EscalatedKinds,
+			Kinds:        kinds,
 			Reasons:      gate.Reasons,
 		}
 		_ = workflow.SetQueryHandler(ctx, reviewQueryName, func() (ReviewRequest, error) { return review, nil })
@@ -371,9 +388,13 @@ func AgentGraphWorkflow(ctx workflow.Context, res pipeline.SubmissionResult) (pi
 		sel.AddFuture(workflow.NewTimer(ctx, reviewTimeout), func(workflow.Future) {})
 		sel.Select(ctx)
 
-		if got && decision.Approved {
-			// human gold label: promote the analysis facts to curated memory.
-			_ = workflow.ExecuteActivity(ctx, a.IngestLearningActivity, LearnInput{Result: res, Confirmed: true}).Get(ctx, nil)
+		if got {
+			// feed the decision back into calibration + graduation (the learning
+			// signal), then, on approval, promote the analysis facts to curated.
+			_ = workflow.ExecuteActivity(ctx, a.RecordOutcomeActivity, RecordInput{Escalated: gate.Escalated, Approved: decision.Approved}).Get(ctx, nil)
+			if decision.Approved {
+				_ = workflow.ExecuteActivity(ctx, a.IngestLearningActivity, LearnInput{Result: res, Confirmed: true}).Get(ctx, nil)
+			}
 		}
 	}
 	// tier-1 working-index ingest (always; a no-op on any fact already curated).
@@ -408,6 +429,28 @@ func cleanCites(cs []aiplane.Citation) []aiplane.Citation {
 		}
 	}
 	return out
+}
+
+// RecordInput carries a resolved HITL decision back to the learning components.
+type RecordInput struct {
+	Escalated []EscalatedItem
+	Approved  bool
+}
+
+// RecordOutcomeActivity feeds a human's decision into calibration (was a claim of
+// this confidence right?) and graduation (per-category track record). it is the
+// write side of the feedback loop; both components are downgrade-biased, so a
+// wrong-but-confident category loses trust over time. a no-op if neither is wired.
+func (a *Analyzer) RecordOutcomeActivity(ctx context.Context, in RecordInput) error {
+	for _, e := range in.Escalated {
+		if a.grad != nil {
+			a.grad.Record(e.Kind, in.Approved)
+		}
+		if a.calibration != nil {
+			a.calibration.Record(e.Kind, e.Confidence, in.Approved)
+		}
+	}
+	return nil
 }
 
 func (a *Analyzer) ledgerAppend(h aiplane.Handshake) {

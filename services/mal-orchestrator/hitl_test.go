@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,7 @@ func TestAgentGraphHITLApprovalCurates(t *testing.T) {
 	env.RegisterActivity(a.RunRosterActivity)
 	env.RegisterActivity(a.GateActivity)
 	env.RegisterActivity(a.IngestLearningActivity)
+	env.RegisterActivity(a.RecordOutcomeActivity)
 	// the analyst approves shortly after the workflow raises the review task.
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(reviewSignalName, ReviewDecision{Approved: true, Note: "confirmed emotet"})
@@ -80,5 +82,24 @@ func TestAgentGraphHITLTimeoutLeavesWorkingIndex(t *testing.T) {
 	}
 	if node, ok := a.graph.Node(knowledge.NodeSample, sha); !ok || node.Trust != knowledge.TrustIngest {
 		t.Fatalf("without approval the analysis must stay in the working index: %+v ok=%v", node, ok)
+	}
+}
+
+func TestRecordOutcomeFeedsLearning(t *testing.T) {
+	grad := aiplane.NewGraduation()
+	cal := aiplane.NewCalibration()
+	a := &Analyzer{grad: grad, calibration: cal}
+	esc := []EscalatedItem{{Kind: "family", Confidence: "HIGH"}}
+	// repeated rejections of a confident family category feed the learning loop.
+	for i := 0; i < 12; i++ {
+		if err := a.RecordOutcomeActivity(context.Background(), RecordInput{Escalated: esc, Approved: false}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cal.Calibrated("family", "HIGH") == "HIGH" {
+		t.Fatal("repeated rejections must recalibrate a HIGH family claim downward")
+	}
+	if grad.Mode("family") == aiplane.ModeAutonomous {
+		t.Fatal("a wrong track record must never graduate a category to autonomous")
 	}
 }

@@ -137,6 +137,8 @@ func main() {
 		a.gate = aiplane.NewGate(reg)
 		a.agentLedger = aiplane.NewLedger()
 		a.graph = knowledge.NewGraph(knowledge.NewMemGraph()) // tier-1 learning target (in-memory until a persistent store lands, ASK STORE-1)
+		a.grad = aiplane.NewGraduation()                      // fed by HITL outcomes (sec 14)
+		a.calibration = aiplane.NewCalibration()              // downgrades mis-calibrated confidence (sec 06/11)
 		log.Printf("AI agent-graph enabled (roster=%s, L0 seeded with %d facts); enrichment is async and caged", au, n)
 	}
 

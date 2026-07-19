@@ -8,6 +8,7 @@ only the context each agent consumes, and fails closed on an unknown name.
 
 from __future__ import annotations
 
+from ..tracing import trace
 from . import (
     analyst,
     capability_reasoner,
@@ -37,11 +38,16 @@ ROSTER = (
 
 
 async def run_agent(name, ev, *, priors=None, claim="", reason="", confirmed=None):
-    """Dispatch to a roster agent by name, passing only the context it consumes.
+    """Dispatch to a roster agent by name, wrapped in an optional Langfuse trace.
 
     Raises ValueError on an unknown name (fail-closed). The Temporal graph calls
     this via the HTTP surface; each agent's own typed output is returned.
     """
+    with trace("agent:" + name, submission=getattr(ev, "submission_id", "")):
+        return await _dispatch(name, ev, priors=priors, claim=claim, reason=reason, confirmed=confirmed)
+
+
+async def _dispatch(name, ev, *, priors=None, claim="", reason="", confirmed=None):
     if name == "router":
         return await router.run(ev)
     if name == "correlator":

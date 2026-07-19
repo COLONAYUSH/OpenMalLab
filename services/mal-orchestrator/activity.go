@@ -89,7 +89,9 @@ type Analyzer struct {
 	agents      agentCaller
 	gate        *aiplane.Gate
 	agentLedger *aiplane.Ledger
-	graph       *knowledge.Graph // L1: tier-1 learning writes finalized facts here
+	graph       *knowledge.Graph     // L1: tier-1 learning writes finalized facts here
+	grad        *aiplane.Graduation  // autonomy graduation (sec 14), fed by HITL outcomes
+	calibration *aiplane.Calibration // confidence calibration (sec 06/11), fed by HITL outcomes
 }
 
 // the sha is about to be spliced into an engine api mount spec; it gets

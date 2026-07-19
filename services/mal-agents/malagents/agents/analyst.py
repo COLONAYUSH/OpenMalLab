@@ -13,6 +13,7 @@ from pydantic_ai import Agent
 
 from ..models import Evidence, Proposal
 from ..provider import get_model
+from ..tracing import trace
 
 SYSTEM_PROMPT = (
     "You are a containment-aware malware analysis assistant inside an isolated, "
@@ -47,6 +48,7 @@ def evidence_prompt(ev: Evidence) -> str:
 
 async def analyze(ev: Evidence) -> Proposal:
     """Run the analyst agent end to end and return its typed proposal."""
-    agent = build_analyst()
-    result = await agent.run(evidence_prompt(ev))
-    return result.output
+    with trace("agent:analyst", submission=ev.submission_id):
+        agent = build_analyst()
+        result = await agent.run(evidence_prompt(ev))
+        return result.output
