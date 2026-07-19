@@ -51,6 +51,7 @@ Most of what you need to analyze malware already exists. The problem is it lives
 - [The containment model](#the-containment-model)
 - [The engines](#the-engines)
 - [The analyst console](#the-analyst-console)
+- [The agentic analyst](#the-agentic-analyst)
 - [Roadmap](#roadmap)
 - [Tech stack](#tech-stack)
 - [Repo layout](#repo-layout)
@@ -64,7 +65,8 @@ Most of what you need to analyze malware already exists. The problem is it lives
 - **Fail closed, always.** No file comes back clean because analysis got interrupted, capped, or crashed. Unknown is not benign. A crash raises suspicion, it never lowers it.
 - **A verdict you can rank and read.** Severity and confidence are separate axes, so a real signature hit outranks a crashed engine even though both are "suspicious." Every point of the score traces to the finding that earned it.
 - **Recursive by design.** A zip inside a zip inside an email is walked to the bottom, each artifact re-analyzed, every finding tagged with the breadcrumb path back to the root.
-- **Air-gap-first, not air-gap-eventually.** Zero mandatory external calls. Every image builds hermetically; every model and rule set is pinned by hash into the image.
+- **A caged AI analyst that compounds.** A multi-agent layer proposes families, behaviors, and IOCs and learns from every sample into an on-premise knowledge graph - but it is jailed, brokered, and fail-closed like any engine: it cites spine-verified facts or it escalates, it earns autonomy on a track record, and it can never move a verdict by itself.
+- **Air-gap-first, not air-gap-eventually.** Zero mandatory external calls. Every image builds hermetically; every model and rule set is pinned by hash into the image. The AI plane is local-default and off unless a model is wired.
 
 ## Quickstart
 
@@ -197,6 +199,84 @@ Rules and models are vendored into each image and pinned by hash, so the image d
 
 A dark, forensic, read-only triage front end: a severity-striped queue ranked by verdict then score, and a detail pane with a circular score gauge over the recursive evidence tree (breadcrumb paths, findings grouped by engine, ATT&CK chips). It is fully self-contained and air-gap-clean (no external fonts, scripts, or calls), theme-aware, and every specimen-derived string is inert-rendered and defanged, because the console is itself a hostile-content surface. Source in [`services/mal-web/`](services/mal-web/).
 
+## The agentic analyst
+
+The platform learns from every sample it sees, on-premise, forever, through a
+multi-agent AI layer that is a first-class analyst and a fully **caged, untrusted**
+one. The model reasons over attacker-controlled text, so it is treated exactly like
+the engines: jailed, brokered, fail-closed, and **never trusted as authority**. It
+can propose a hypothesis, a family, an IOC; the deterministic lattice and a
+confidence gate decide. Turn the whole plane off and every verdict still stands.
+
+Three invariants, enforced structurally, not by convention:
+
+- **Evidence, not authority.** An agent proposes; the gate disposes. Accepted
+  enrichment is capped at SUSPICIOUS and must cite a spine-verified curated fact.
+  The AI can never reach MALICIOUS on its own, and can never lower a verdict.
+- **Contained like an engine.** The roster runs in an isolated, no-egress plane on
+  a defanged, structured projection of the sample. Its output crosses a
+  broker-analogue validator before any trusted process reads it.
+- **Earned, calibrated autonomy.** A category starts in shadow and earns autonomy
+  only on a measured track record; a confidently-wrong category is auto-demoted and
+  recalibrated. Every consequential handoff is a hash-chained ledger row.
+
+```mermaid
+flowchart TB
+  SW[SubmissionWorkflow<br/>deterministic, fail-closed verdict] -- verdict persisted --> OUT([analyst / console])
+  SW -. ABANDON child, off unless configured .-> AG
+
+  subgraph PLANE [AI-analyst plane: isolated, no egress, untrusted]
+    direction TB
+    AG[AgentGraphWorkflow<br/>Temporal drives the graph]
+    subgraph ROSTER [Pydantic-AI roster, jailed]
+      direction TB
+      RT[Router: which agents + budget]
+      CO[Correlator: retrieve priors]
+      SPEC[Capability reasoner / IOC extractor<br/>Family hypothesizer / Novelty / Report]
+      VF[Adversarial verifier<br/>tries to REFUTE each hypothesis]
+    end
+    AG -- defanged evidence --> RT --> CO --> SPEC --> VF
+    VF -- typed Proposal + per-hypothesis signals --> VAL[Validate<br/>strict, bounded, fail-closed]
+    VAL --> GATE[Confidence gate<br/>inverted, downgrade-only, 4 axes]
+  end
+
+  subgraph KB [Knowledge: deterministic memory, curated vs ingest]
+    direction LR
+    L0[(L0 exact-key<br/>citation truth)]
+    L05[(L0.5 fuzzy)]
+    L1[(L1 graph<br/>attribution)]
+    L2[(L2 semantic<br/>non-citable)]
+  end
+  GATE -- re-resolve citations --> L0
+  CO -. GraphRAG retrieval .-> L05 & L1 & L2
+
+  GATE -- accept: capped-SUSPICIOUS enrichment --> AG
+  GATE -- escalate --> HITL[HITL: Temporal signal, durable await]
+  AG -- fold, raise-only --> SW
+  HITL -- analyst decision --> REC[record calibration + graduation]
+  HITL -- approved: gold label --> L1
+  REC -. downgrades future overconfidence .-> GATE
+```
+
+<div align="center">
+  <img src="docs/diagrams/render/agentic-plane.svg" alt="The agentic analyst plane: every component, flow, and trust boundary" width="900" />
+</div>
+
+The reasoning muscle is a Pydantic-AI roster (`services/mal-agents/`); Temporal
+drives the graph and makes it durable; the Go plane (`internal/aiplane`) is the
+trusted adjudicator - the strict validator, the gate, and the ledger. Its memory
+is a four-tier knowledge base (`internal/knowledge`): an exact-key registry that is
+the source of truth for citation verification, a fuzzy-deterministic similarity
+tier, a relational attribution graph, and a semantic fallback whose output is
+explicitly non-citable. Curated facts (human/CI-gated) are the only ones that can
+back a verdict-moving claim; auto-ingested facts are retrievable context that can
+never overwrite them - the structural guard against a learning loop being poisoned
+over time. The full design and the live wiring are in
+[docs/AI-PLANE-INTEGRATION.md](docs/AI-PLANE-INTEGRATION.md), and a rendered
+Graphviz of the whole plane is at
+[docs/diagrams/agentic-plane.dot](docs/diagrams/agentic-plane.dot). It is
+air-gapped by default: no model configured means a deterministic-only platform.
+
 ## Roadmap
 
 We build in phases, and each phase is a real product on its own.
@@ -215,7 +295,15 @@ We build in phases, and each phase is a real product on its own.
 - [ ] MACO config / family extraction
 - [ ] Real vault crypto, WORM audit, OIDC, persistence, the live queue API
 
-**Phase 1.5** - Ghidra as a crash-isolated service, full Volatility memory forensics, an interactive analyst view, full-text search at scale, the first quarantined local-AI extraction.
+**The agentic analyst** (built and tested; off by default until a model is wired)
+
+- [x] The caged AI plane: evidence contract, broker-analogue validator, and the inverted, downgrade-only confidence gate with all four axes
+- [x] Four-tier knowledge base (L0 exact-key, L0.5 fuzzy, L1 attribution graph, L2 semantic non-citable) with curated vs ingest trust tiers
+- [x] Nine-agent Pydantic-AI roster + the Temporal agent-graph, an adversarial verifier, and a hash-chained handshake ledger
+- [x] HITL via Temporal signals, tier-1 learning (poisoning-gated), autonomy graduation, calibration, and the tier-2/3 promotion gate
+- [ ] Live wiring: seed corpora at scale, a persistent graph/vector store, local vLLM inference, self-hosted Langfuse (see [ASK.md](ASK.md))
+
+**Phase 1.5** - Ghidra as a crash-isolated service, full Volatility memory forensics, an interactive analyst view, and full-text search at scale.
 
 **Phase 2** - the detonation plane: multi-tier, anti-evasion, and physically dead-ended so a full escape reaches nothing. Hunting and retrohunt over your own corpus, code-reuse attribution, a threat-intel graph, case management, a guardrailed AI assistant, and hard multi-tenancy.
 
@@ -227,10 +315,11 @@ Why detonation is Phase 2 and not Phase 1 is in [docs/DECISION-LOG.md](docs/DECI
 
 Chosen for correctness, offline operability, and a permissive-license core.
 
-- **Orchestration:** Temporal for durable workflows, retries, timeouts, and safe recursion.
-- **Languages:** Rust at the hostile-input boundary, Go for the control plane, Python for the heavier analysis engines, HTML/CSS/JS for the console.
+- **Orchestration:** Temporal for durable workflows, retries, timeouts, safe recursion, and the durable HITL await.
+- **Languages:** Rust at the hostile-input boundary, Go for the control plane and the trusted AI adjudicator, Python for the heavier analysis engines and the agent roster, HTML/CSS/JS for the console.
+- **The AI plane (lean by design):** Pydantic-AI for typed, structured-output agents; a local, OpenAI-compatible model (vLLM) by default with a guarded, egress-gated cloud adapter; self-hosted Langfuse for on-premise tracing. No heavy framework tree in the air-gapped plane; the strict Go validator is the security primitive.
 - **State, kept deliberately small:** PostgreSQL, Temporal, SeaweedFS for object storage, OpenBao for secrets.
-- **Isolation:** every engine is a jailed, single-use sibling container spawned per submission; the orchestrator is the only writer of the stores.
+- **Isolation:** every engine is a jailed, single-use sibling container spawned per submission; the orchestrator is the only writer of the stores; the AI plane runs in its own no-egress network and can never touch the deterministic verdict.
 
 ## Repo layout
 
@@ -242,10 +331,14 @@ services/
   mal-extract/       Rust  recursive, bomb-safe, path-safe unpacking
   mal-static-yara/   Rust  YARA-X with a self-describing rule pack
   mal-capa/          Py    capa capability detection
+  mal-floss/         Py    FLOSS string recovery
   mal-broker/        Go    the trust-boundary validator
   mal-web/           web   the read-only analyst console
+  mal-agents/        Py    the jailed Pydantic-AI agent roster (the AI plane's reasoning)
 internal/pipeline/   the shared verdict lattice, confidence, and score
-deploy/              docker compose for the control node, plus the boundary and e2e proofs
+internal/aiplane/    the trusted AI adjudicator: contract, gate, provider, ledger, calibration
+internal/knowledge/  the four-tier knowledge base (L0/L0.5/L1/L2) and citation verification
+deploy/              docker compose for the control node (plus compose.ai.yaml overlay) and the proofs
 docs/                the full, frozen, reviewed design
 ```
 

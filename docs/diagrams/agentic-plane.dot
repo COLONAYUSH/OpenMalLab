@@ -1,0 +1,95 @@
+// OpenMalLab - the agentic analyst plane (design sec 03-14).
+// Render:  dot -Tsvg docs/diagrams/agentic-plane.dot -o docs/diagrams/render/agentic-plane.svg
+//
+// Reading it: the deterministic spine (top) owns the verdict and is never blocked
+// or altered by the AI. The AI plane (center) is isolated + untrusted: agents
+// PROPOSE, the Go validator + confidence gate DISPOSE, the knowledge base (right)
+// is the deterministic memory citations are verified against, and the HITL loop
+// (bottom) turns a human decision into the gold label + calibration/graduation
+// signal that trains the next run. Nothing crosses a cluster boundary untyped.
+
+digraph agentic_plane {
+  rankdir=TB;
+  graph [fontname="Helvetica", fontsize=11, labelloc=t,
+         label="OpenMalLab - Agentic Analyst Plane  (agents propose, the spine disposes)"];
+  node  [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", fillcolor="#f2f4f8", color="#3d4757"];
+  edge  [fontname="Helvetica", fontsize=9, color="#4a5060"];
+
+  // ---- the deterministic spine: the source of truth ----
+  subgraph cluster_spine {
+    label="deterministic spine (trusted; the AI can never change or delay it)";
+    style="rounded,filled"; fillcolor="#eef6f0"; color="#2f8f63";
+    SW  [label="SubmissionWorkflow\n(engines -> broker -> fail-closed lattice)", fillcolor="#dff0e6"];
+    OUT [label="verdict + score + confidence\n-> analyst / console", shape=oval, fillcolor="#dff0e6"];
+    SW -> OUT [label="persisted immediately"];
+  }
+
+  // ---- the AI-analyst plane: isolated, no egress, untrusted ----
+  subgraph cluster_plane {
+    label="AI-analyst plane (isolated network, no egress, untrusted)";
+    style="rounded,filled"; fillcolor="#eef1f8"; color="#2f628f";
+
+    AG [label="AgentGraphWorkflow\n(Temporal drives the graph)", fillcolor="#dfe6f4"];
+
+    subgraph cluster_roster {
+      label="Pydantic-AI roster (jailed; each agent typed, cites facts, never a verdict)";
+      style="rounded,filled"; fillcolor="#f6f8fc"; color="#4d6a8a";
+      RT [label="Router\nwhich agents + budget"];
+      CO [label="Correlator\nretrieve priors"];
+      CR [label="Capability\nreasoner"];
+      IX [label="IOC\nextractor"];
+      FH [label="Family\nhypothesizer"];
+      ND [label="Novelty\ndetector"];
+      RW [label="Report\nwriter"];
+      VF [label="Adversarial verifier\ntries to REFUTE each hypothesis", fillcolor="#f4e9e9", color="#c73338"];
+    }
+
+    VAL  [label="Validate\nstrict, bounded, defanged, fail-closed", fillcolor="#dfe6f4"];
+    GATE [label="Confidence gate\ninverted + downgrade-only\naxes: grounding, verifier, self-consistency, calibration", fillcolor="#dfe6f4", color="#2f628f"];
+    LED  [label="handshake ledger\nhash-chained, tamper-evident", shape=note, fillcolor="#f6f8fc"];
+  }
+
+  // ---- the knowledge base: deterministic memory (citation source of truth) ----
+  subgraph cluster_kb {
+    label="Knowledge (deterministic memory; curated outranks ingest, always)";
+    style="rounded,filled"; fillcolor="#faf6ee"; color="#a9761a";
+    L0  [label="L0 exact-key registry\ncitation truth (curated only)", shape=cylinder, fillcolor="#f3ead6"];
+    L05 [label="L0.5 fuzzy similarity\nMinHash / imphash (reproducible)", shape=cylinder, fillcolor="#f3ead6"];
+    L1  [label="L1 attribution graph\nsample/family/technique/actor", shape=cylinder, fillcolor="#f3ead6"];
+    L2  [label="L2 semantic fallback\nNON-citable, confidence-lowering", shape=cylinder, fillcolor="#f3ead6"];
+  }
+
+  // ---- human-in-the-loop + the learning feedback ----
+  subgraph cluster_hitl {
+    label="human-in-the-loop + learning feedback";
+    style="rounded,filled"; fillcolor="#f8f2f2"; color="#c73338";
+    HITL [label="HITL\nTemporal signal, durable await (or timeout)", fillcolor="#f4e6e6"];
+    REC  [label="record outcome\ncalibration (downgrade) + graduation (earned autonomy)", fillcolor="#f4e6e6"];
+  }
+
+  // ---- flows ----
+  SW  -> AG   [label="ABANDON child\n(off unless MAL_AGENTS_URL set)", style=dashed, color="#7d9bbb"];
+  AG  -> RT   [label="defanged, structured evidence"];
+  RT  -> CO;
+  CO  -> CR;  CO -> IX;  CO -> FH;  CO -> ND;  CO -> RW;
+  CR  -> VF;  FH -> VF;  RW -> VF  [style=dotted];
+  VF  -> VAL  [label="typed Proposal + per-hypothesis GateSignals"];
+  VAL -> GATE;
+
+  GATE -> L0  [label="re-resolve + verify citations", color="#a9761a"];
+  CO   -> L05 [label="GraphRAG retrieval", style=dotted, color="#a9761a"];
+  CO   -> L1  [style=dotted, color="#a9761a"];
+  CO   -> L2  [style=dotted, color="#a9761a"];
+
+  GATE -> AG   [label="ACCEPT: capped-SUSPICIOUS enrichment"];
+  AG   -> SW   [label="fold, raise-only (<= SUSPICIOUS)", color="#2f8f63"];
+  GATE -> HITL [label="ESCALATE (grounded-high-stakes, refuted,\nnovel, or supervised category)", color="#c73338"];
+  GATE -> LED  [style=dotted, label="every handshake"];
+
+  HITL -> REC  [label="analyst approve / reject"];
+  HITL -> L1   [label="approved: gold label -> CURATED", color="#2f8f63"];
+  REC  -> GATE [label="downgrades future overconfidence;\ndemotes a wrong category", style=dashed, color="#c73338"];
+
+  // tier-1 auto-ingest lands low-trust; only human-confirm curates.
+  AG -> L1 [label="tier-1: auto facts -> INGEST (working index)", style=dashed, color="#a9761a"];
+}
