@@ -124,12 +124,28 @@ func main() {
 		log.Printf("AI-analyst plane enabled (model=%s); enrichment is async and caged", url)
 	}
 
+	// optional multi-agent graph (design sec 05). air-gapped by default: nil unless
+	// a roster service URL is configured. seeds L0 so cited facts can ground on day
+	// one; caged and async like the single-analyst path (see AgentGraphWorkflow).
+	if au := os.Getenv("MAL_AGENTS_URL"); au != "" {
+		reg := knowledge.NewRegistry(knowledge.NewMemStore())
+		n, _, err := reg.SeedStarter()
+		if err != nil {
+			log.Fatalf("seed L0: %v", err)
+		}
+		a.agents = newHTTPAgentCaller(au)
+		a.gate = aiplane.NewGate(reg)
+		a.agentLedger = aiplane.NewLedger()
+		log.Printf("AI agent-graph enabled (roster=%s, L0 seeded with %d facts); enrichment is async and caged", au, n)
+	}
+
 	w := worker.New(tc, TaskQueue, worker.Options{
 		// each activity holds a jail (512m, 1 cpu); keep the fleet bounded.
 		MaxConcurrentActivityExecutionSize: 4,
 	})
 	w.RegisterWorkflow(SubmissionWorkflow)
 	w.RegisterWorkflow(EnrichmentWorkflow)
+	w.RegisterWorkflow(AgentGraphWorkflow)
 	w.RegisterActivity(a)
 
 	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s capa=%s floss=%s broker=%s)",

@@ -81,6 +81,13 @@ type Analyzer struct {
 	// optional AI-analyst plane. nil in the air-gapped default (no model wired);
 	// when set, EnrichmentWorkflow runs it as a caged, async, post-verdict step.
 	aiplane *aiplane.AIPlane
+
+	// optional multi-agent graph (design sec 05). nil unless MAL_AGENTS_URL is set.
+	// agents is the untrusted Python-roster caller; gate + agentLedger are the
+	// trusted adjudication side that AgentGraphWorkflow runs against the seeded L0.
+	agents      agentCaller
+	gate        *aiplane.Gate
+	agentLedger *aiplane.Ledger
 }
 
 // the sha is about to be spliced into an engine api mount spec; it gets
