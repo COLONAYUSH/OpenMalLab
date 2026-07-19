@@ -42,6 +42,8 @@ build/
 # Secrets / local env (never commit)
 .env
 .env.*
+# ...but DO commit the template a fresh clone copies to .env
+!.env.example
 *.pem
 *.key
 secrets/
