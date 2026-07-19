@@ -18,16 +18,24 @@ services:
       # in-process test model, so the roster runs before a model is provisioned.
       MAL_MODEL_URL: ${MAL_MODEL_URL:-}
       MAL_MODEL_NAME: ${MAL_MODEL_NAME:-local}
+      # cloud egress is OFF unless BOTH a non-loopback MAL_MODEL_URL and this explicit
+      # opt-in are set (see provider.py). the key is passed only when provided.
+      MAL_MODEL_KEY: ${MAL_MODEL_KEY:-}
+      MAL_ALLOW_CLOUD: ${MAL_ALLOW_CLOUD:-}
       # optional self-hosted Langfuse. unset -> no tracing (air-gapped default).
       MAL_LANGFUSE_URL: ${MAL_LANGFUSE_URL:-}
       MAL_LANGFUSE_PUBLIC_KEY: ${MAL_LANGFUSE_PUBLIC_KEY:-}
       MAL_LANGFUSE_SECRET_KEY: ${MAL_LANGFUSE_SECRET_KEY:-}
     # hardened + isolated: no privileges, read-only rootfs, non-root (Dockerfile),
-    # and on an internal network with no egress. the Go broker-analogue Validate is
-    # the trust boundary for everything this service returns.
+    # bounded resources (a runaway or hostile payload cannot exhaust the host), and
+    # on an internal network with no egress. the Go broker-analogue Validate is the
+    # trust boundary for everything this service returns.
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges]
+    mem_limit: 1g
+    cpus: "1.0"
+    pids_limit: 256
     networks: [aiplane]
     expose: ["8099"]
     healthcheck:

@@ -9,7 +9,8 @@ activity boundary is the containment, exactly like the capa and floss workers.
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .agents.analyst import analyze
@@ -20,6 +21,24 @@ from .models import Evidence, Proposal
 from .provider import cloud_enabled, model_configured
 
 app = FastAPI(title="OpenMalLab agent plane", version="0.1.0")
+
+# the evidence projection is bounded on the Go side; anything larger is hostile or
+# broken. reject it at the door (defense in depth with the container mem_limit) so a
+# giant body cannot pin memory before the schema validator even runs.
+MAX_REQUEST_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+
+@app.middleware("http")
+async def _limit_body_size(request: Request, call_next):
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            n = int(cl)
+        except ValueError:
+            return JSONResponse({"detail": "invalid content-length"}, status_code=400)
+        if n > MAX_REQUEST_BYTES:
+            return JSONResponse({"detail": "request body too large"}, status_code=413)
+    return await call_next(request)
 
 
 def _for_model(ev: Evidence) -> Evidence:
