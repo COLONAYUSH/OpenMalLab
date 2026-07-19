@@ -344,6 +344,9 @@ func AgentGraphWorkflow(ctx workflow.Context, res pipeline.SubmissionResult) (pi
 	if gate.NeedsReview {
 		res.NeedsReview = true
 	}
+	// tier-1 learning: record the finalized analysis to the low-trust working index
+	// (best effort; a learning-write failure never affects the verdict).
+	_ = workflow.ExecuteActivity(ctx, a.IngestLearningActivity, LearnInput{Result: res, Confirmed: false}).Get(ctx, nil)
 	return res, nil
 }
 

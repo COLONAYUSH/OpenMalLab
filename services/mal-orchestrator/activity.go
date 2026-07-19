@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/aiplane"
+	"github.com/COLONAYUSH/OpenMalLab/internal/knowledge"
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
@@ -88,6 +89,7 @@ type Analyzer struct {
 	agents      agentCaller
 	gate        *aiplane.Gate
 	agentLedger *aiplane.Ledger
+	graph       *knowledge.Graph // L1: tier-1 learning writes finalized facts here
 }
 
 // the sha is about to be spliced into an engine api mount spec; it gets

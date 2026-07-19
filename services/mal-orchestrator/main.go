@@ -136,6 +136,7 @@ func main() {
 		a.agents = newHTTPAgentCaller(au)
 		a.gate = aiplane.NewGate(reg)
 		a.agentLedger = aiplane.NewLedger()
+		a.graph = knowledge.NewGraph(knowledge.NewMemGraph()) // tier-1 learning target (in-memory until a persistent store lands, ASK STORE-1)
 		log.Printf("AI agent-graph enabled (roster=%s, L0 seeded with %d facts); enrichment is async and caged", au, n)
 	}
 
