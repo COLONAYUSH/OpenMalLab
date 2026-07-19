@@ -209,13 +209,63 @@ func validKey(kind Kind, normKey string) bool {
 	}
 }
 
-// Registry is the L0 exact-key knowledge layer over a Store.
+// simNGram is the character n-gram size for L0.5 signatures. bigrams, because the
+// keys it fuzzy-matches (ATT&CK ids, family/packer names) are short - trigrams
+// leave too few grams for MinHash Jaccard to be meaningful on a 5-8 char key.
+const simNGram = 2
+
+// Registry is the L0 exact-key knowledge layer over a Store. It optionally owns an
+// L0.5 SimIndex: when present, every CURATED key is added as a fuzzy reference so a
+// near-but-not-exact signal (a sub-technique variant, a typo'd family) can be
+// surfaced as a non-citable LEAD alongside the exact L0 lookups.
 type Registry struct {
 	store Store
+	sim   *SimIndex // L0.5 fuzzy references (curated only); nil = exact-only
 }
 
-// NewRegistry wraps a Store as an L0 registry.
+// NewRegistry wraps a Store as an L0 registry (exact-key only, no L0.5).
 func NewRegistry(store Store) *Registry { return &Registry{store: store} }
+
+// NewRegistryWithSim wraps a Store as an L0 registry that also maintains the given
+// L0.5 SimIndex: curated writes populate it, and FuzzyKeys queries it.
+func NewRegistryWithSim(store Store, sim *SimIndex) *Registry {
+	return &Registry{store: store, sim: sim}
+}
+
+// FuzzyHit is one L0.5 fuzzy match: a curated key of the queried kind whose
+// signature resembles the query. It is a LEAD, never authority - the key is not
+// citable (grounding still requires an exact L0 curated citation the gate verifies).
+type FuzzyHit struct {
+	Kind Kind
+	Key  string
+	Sim  float64
+}
+
+// FuzzyKeys returns curated keys of `kind` whose L0.5 signature is similar
+// (>= minSim) to `key`, most-similar first, excluding an exact match (that is L0).
+// Empty when no L0.5 index is wired or nothing is near. Kind-scoped: an ATT&CK
+// query never matches a family key.
+func (r *Registry) FuzzyKeys(kind Kind, key string, minSim float64, limit int) []FuzzyHit {
+	if r.sim == nil {
+		return nil
+	}
+	norm := normalizeKey(kind, key)
+	sig := SignatureOf(NGrams([]byte(norm), simNGram))
+	if sig.Empty() {
+		return nil
+	}
+	var hits []FuzzyHit
+	for _, n := range r.sim.Nearest(sig, minSim, 0) {
+		if n.Source != string(kind) || n.Label == norm {
+			continue // wrong kind, or an exact key (that is an L0 hit, not an L0.5 lead)
+		}
+		hits = append(hits, FuzzyHit{Kind: kind, Key: n.Label, Sim: n.Sim})
+		if limit > 0 && len(hits) >= limit {
+			break
+		}
+	}
+	return hits
+}
 
 // Curate adds or upgrades a trusted fact. curated always wins a merge, so a
 // re-curation refreshes label/attrs/source and an ingest fact is promoted.
@@ -259,12 +309,21 @@ func (r *Registry) put(kind Kind, key, label string, attrs map[string]string, so
 	}
 	// the tier rule is applied atomically inside the store: ingest never wins
 	// over an existing curated fact, no matter how the calls interleave.
-	return r.store.Merge(incoming.ID, func(existing Fact, existed bool) (bool, Fact) {
+	f, err := r.store.Merge(incoming.ID, func(existing Fact, existed bool) (bool, Fact) {
 		if existed && existing.Trust == TrustCurated && trust == TrustIngest {
 			return false, existing
 		}
 		return true, incoming
 	})
+	// mirror curated keys into the L0.5 fuzzy index (references only - ingest is not
+	// authoritative enough to seed a fuzzy lead). best-effort: a rejected signature
+	// (too short to n-gram) simply is not fuzzy-matchable, which is fine.
+	if err == nil && trust == TrustCurated && r.sim != nil {
+		if sig := SignatureOf(NGrams([]byte(norm), simNGram)); !sig.Empty() {
+			r.sim.AddReference(sig, norm, string(kind))
+		}
+	}
+	return f, err
 }
 
 // Lookup returns the fact for an exact (kind, key), for retrieval. it returns

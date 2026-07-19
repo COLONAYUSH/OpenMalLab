@@ -376,6 +376,37 @@ func TestControlCharKeysRejected(t *testing.T) {
 	}
 }
 
+func TestFuzzyKeys(t *testing.T) {
+	sim := NewSimIndex()
+	r := NewRegistryWithSim(NewMemStore(), sim)
+	if _, err := r.Curate(KindFamily, "quasar", "", nil, "seed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Curate(KindFamily, "emotet", "", nil, "seed"); err != nil {
+		t.Fatal(err)
+	}
+
+	// a near-variant fuzzy-matches its family, not the unrelated one.
+	hits := r.FuzzyKeys(KindFamily, "quasarx", 0.5, 5)
+	if len(hits) != 1 || hits[0].Key != "quasar" {
+		t.Fatalf("expected only 'quasar' as a fuzzy lead, got %+v", hits)
+	}
+	// kind-scoped: an ATT&CK query must never match a family reference.
+	if h := r.FuzzyKeys(KindAttck, "quasarx", 0.5, 5); len(h) != 0 {
+		t.Fatalf("fuzzy match must be kind-scoped, got %+v", h)
+	}
+	// an EXACT key is an L0 hit, never returned as an L0.5 lead.
+	for _, h := range r.FuzzyKeys(KindFamily, "quasar", 0.5, 5) {
+		if h.Key == "quasar" {
+			t.Fatal("an exact key must not be surfaced as an L0.5 lead")
+		}
+	}
+	// a registry with no L0.5 index yields no fuzzy leads (exact-only).
+	if h := NewRegistry(NewMemStore()).FuzzyKeys(KindFamily, "quasarx", 0.5, 5); h != nil {
+		t.Fatalf("an exact-only registry must return no fuzzy leads, got %+v", h)
+	}
+}
+
 func TestStoreCapacity(t *testing.T) {
 	r := NewRegistry(NewMemStoreWithCap(2))
 	// fill to capacity with INGEST facts (the attacker-influenceable tier).

@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -153,17 +154,19 @@ type agentVerdict struct {
 // RosterOutcome is RunRosterActivity's result: an assembled proposal to be
 // re-validated + gated, and one GateSignals per hypothesis (in order).
 type RosterOutcome struct {
-	Configured   bool
-	ProposalJSON []byte
-	Signals      []aiplane.GateSignals
+	Configured     bool
+	ProposalJSON   []byte
+	Signals        []aiplane.GateSignals
+	RetrievalTiers []string // the knowledge tiers consulted (L0 / L0.5 ...), for the ledger
 }
 
 // GateInput / GateOutcome carry the trusted adjudication across the activity
 // boundary.
 type GateInput struct {
-	Result   pipeline.SubmissionResult
-	Proposal []byte
-	Signals  []aiplane.GateSignals
+	Result         pipeline.SubmissionResult
+	Proposal       []byte
+	Signals        []aiplane.GateSignals
+	RetrievalTiers []string // tiers the roster's retrieval consulted, recorded in the ledger
 }
 
 // EscalatedItem is one hypothesis the gate sent to a human, with the model's
@@ -203,7 +206,7 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 	// citation-verification design requires) and hands the reasoners known facts as
 	// CITABLE priors, each with the real L0 fact id the gate will re-verify. the
 	// Correlator agent additionally reasons over them for narrative leads.
-	priors := a.retrievePriors(ev)
+	priors, retrievalTiers := a.retrievePriors(ev)
 	if want["correlator"] {
 		_, _ = a.agents.call(ctx, "correlator", agentReq{Evidence: ev, Priors: priors})
 	}
@@ -288,7 +291,7 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 	if err != nil {
 		return RosterOutcome{Configured: true}, err
 	}
-	return RosterOutcome{Configured: true, ProposalJSON: pj, Signals: signals}, nil
+	return RosterOutcome{Configured: true, ProposalJSON: pj, Signals: signals, RetrievalTiers: retrievalTiers}, nil
 }
 
 // GateActivity is the trusted adjudication: strict Validate, then the confidence
@@ -325,8 +328,13 @@ func (a *Analyzer) GateActivity(ctx context.Context, in GateInput) (GateOutcome,
 		}
 		h.CitedFactIDs = append(h.CitedFactIDs, gh.VerifiedCitationIDs...)
 	}
-	if len(h.CitedFactIDs) > 0 {
-		h.RetrievalTiers = []string{"L0"}
+	// record the ACTUAL tiers the retrieval consulted (L0 exact, L0.5 fuzzy, ...),
+	// not a hardcoded "L0". a verified citation is by definition an L0 curated fact,
+	// so ensure L0 is present when anything grounded, even if tiers were not threaded.
+	h.RetrievalTiers = append([]string(nil), in.RetrievalTiers...)
+	if len(h.CitedFactIDs) > 0 && !containsStr(h.RetrievalTiers, "L0") {
+		h.RetrievalTiers = append(h.RetrievalTiers, "L0")
+		sort.Strings(h.RetrievalTiers)
 	}
 	a.ledgerAppend(h)
 	return GateOutcome{Findings: gr.EnrichmentFindings(), NeedsReview: gr.NeedsHuman, Escalated: escalated, Reasons: gr.Reasons}, nil
@@ -350,7 +358,7 @@ func AgentGraphWorkflow(ctx workflow.Context, res pipeline.SubmissionResult) (pi
 		return res, nil
 	}
 	var gate GateOutcome
-	if err := workflow.ExecuteActivity(ctx, a.GateActivity, GateInput{Result: res, Proposal: roster.ProposalJSON, Signals: roster.Signals}).Get(ctx, &gate); err != nil {
+	if err := workflow.ExecuteActivity(ctx, a.GateActivity, GateInput{Result: res, Proposal: roster.ProposalJSON, Signals: roster.Signals, RetrievalTiers: roster.RetrievalTiers}).Get(ctx, &gate); err != nil {
 		return res, nil // caged
 	}
 	// fold accepted enrichment through the SAME fail-closed lattice (raise-only,
@@ -491,9 +499,20 @@ func (a *Analyzer) noveltyOf(ev aiplane.Evidence) float64 {
 // reasoning agent handed a prior can cite it and the gate will verify it. this is
 // the actual "have we seen this?" retrieval, done spine-side because the roster
 // has no KB access. returns nil when nothing matches (no priors is a valid answer).
-func (a *Analyzer) retrievePriors(ev aiplane.Evidence) json.RawMessage {
+const (
+	simMinSim = 0.5 // L0.5 fuzzy-match threshold: below this a "similar" key is noise
+	simLimit  = 2   // at most this many fuzzy leads per unmatched signal
+)
+
+// retrievePriors returns the priors JSON handed to the reasoners AND the distinct
+// retrieval tiers it consulted (for the ledger's provenance). L0 exact hits are
+// CITABLE (they carry the real fact id the gate re-verifies); L0.5 fuzzy hits are
+// LEADS only (fact_id empty, so the gate can never ground on them - they merely
+// point a reasoner at a curated fact the signal resembles, e.g. a sub-technique
+// variant of a curated technique). nil priors is a valid answer.
+func (a *Analyzer) retrievePriors(ev aiplane.Evidence) (json.RawMessage, []string) {
 	if a.registry == nil {
-		return nil
+		return nil, nil
 	}
 	type prior struct {
 		Kind       string `json:"kind"`
@@ -501,26 +520,81 @@ func (a *Analyzer) retrievePriors(ev aiplane.Evidence) json.RawMessage {
 		Relation   string `json:"relation"`
 		Confidence string `json:"confidence"`
 		FactID     string `json:"fact_id"`
+		Tier       string `json:"tier"`
 	}
 	var priors []prior
+	tiers := map[string]bool{}
 	seen := map[string]bool{}
+	leads := map[string]bool{} // dedup L0.5 leads across signals
 	for _, it := range ev.Items {
 		if it.Attck == "" || seen[it.Attck] {
 			continue
 		}
 		seen[it.Attck] = true
 		if f, ok := a.registry.Lookup(knowledge.KindAttck, it.Attck); ok {
-			priors = append(priors, prior{Kind: "attck", Key: f.Key, Relation: "known-technique", Confidence: "HIGH", FactID: f.ID})
+			priors = append(priors, prior{Kind: "attck", Key: f.Key, Relation: "known-technique", Confidence: "HIGH", FactID: f.ID, Tier: "L0"})
+			tiers["L0"] = true
+			continue
+		}
+		// no exact L0 hit -> L0.5 NEAR matches as non-citable leads (fact_id empty, so
+		// the gate can never ground on them). two paths:
+		var near []string
+		// (a) a sub-technique resembles its curated PARENT (deterministic, structural).
+		if parent := attckParent(it.Attck); parent != "" {
+			if f, ok := a.registry.Lookup(knowledge.KindAttck, parent); ok {
+				near = append(near, f.Key)
+			}
+		}
+		// (b) fuzzy-similar curated techniques via the L0.5 SimIndex.
+		for _, h := range a.registry.FuzzyKeys(knowledge.KindAttck, it.Attck, simMinSim, simLimit) {
+			near = append(near, h.Key)
+		}
+		for _, k := range near {
+			if k == "" || leads[k] {
+				continue
+			}
+			leads[k] = true
+			priors = append(priors, prior{Kind: "attck", Key: k, Relation: "resembles", Confidence: "LOW", FactID: "", Tier: "L0.5"})
+			tiers["L0.5"] = true
 		}
 	}
 	if len(priors) == 0 {
-		return nil
+		return nil, nil
 	}
 	b, err := json.Marshal(map[string]interface{}{"priors": priors})
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return b
+	return b, sortedKeys(tiers)
+}
+
+// sortedKeys returns the map's keys in deterministic order (for a stable ledger).
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// attckParent returns the parent technique id of a sub-technique (T1055.001 ->
+// T1055), or "" if the id is not a sub-technique. a sub-technique is a known NEAR
+// relative of its parent - the reliable, structural half of L0.5 retrieval.
+func attckParent(id string) string {
+	if i := strings.IndexByte(id, '.'); i > 0 {
+		return id[:i]
+	}
+	return ""
+}
+
+func containsStr(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // groundIOCs enforces B2 (reconstruct from trusted): an agent-proposed IOC is kept

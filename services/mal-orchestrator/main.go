@@ -128,7 +128,9 @@ func main() {
 	// a roster service URL is configured. seeds L0 so cited facts can ground on day
 	// one; caged and async like the single-analyst path (see AgentGraphWorkflow).
 	if au := os.Getenv("MAL_AGENTS_URL"); au != "" {
-		reg := knowledge.NewRegistry(knowledge.NewMemStore())
+		// L0 exact + L0.5 fuzzy: seeding the registry also populates the SimIndex, so
+		// retrievePriors can surface near-but-not-exact curated facts as leads.
+		reg := knowledge.NewRegistryWithSim(knowledge.NewMemStore(), knowledge.NewSimIndex())
 		n, _, err := reg.SeedStarter()
 		if err != nil {
 			log.Fatalf("seed L0: %v", err)

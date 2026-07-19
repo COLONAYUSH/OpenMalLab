@@ -175,9 +175,12 @@ func TestRetrievePriorsFromKB(t *testing.T) {
 	ev := aiplane.EvidenceFrom(pipeline.SubmissionResult{
 		Findings: []pipeline.Finding{{Engine: "mal-capa", Attck: "T1055"}, {Engine: "mal-yara", Attck: "T9999"}},
 	})
-	raw := a.retrievePriors(ev)
+	raw, tiers := a.retrievePriors(ev)
 	if raw == nil {
 		t.Fatal("a known ATT&CK technique in the evidence must produce a prior")
+	}
+	if len(tiers) != 1 || tiers[0] != "L0" {
+		t.Fatalf("an exact curated hit must report the L0 tier, got %v", tiers)
 	}
 	// the known technique resolves to its real fact id; the unknown one does not.
 	s := string(raw)
@@ -188,7 +191,7 @@ func TestRetrievePriorsFromKB(t *testing.T) {
 		t.Fatalf("an unknown technique must not become a prior: %s", s)
 	}
 	// no KB wired -> no priors, never a panic.
-	if (&Analyzer{}).retrievePriors(ev) != nil {
+	if raw, _ := (&Analyzer{}).retrievePriors(ev); raw != nil {
 		t.Fatal("no registry must yield no priors")
 	}
 }
@@ -221,6 +224,56 @@ func TestNoveltyOfMeasuredFromL0(t *testing.T) {
 	}
 	if n := (&Analyzer{}).noveltyOf(mk("T1055")); n != 0 {
 		t.Fatalf("no registry wired must yield 0 (no false novelty), got %v", n)
+	}
+}
+
+func TestRetrievePriorsL05SubTechniqueParent(t *testing.T) {
+	// #12/#24: a sub-technique with no exact L0 hit resolves to its curated PARENT as
+	// an L0.5 lead (non-citable: no fact id), and the tier is reported as L0.5.
+	reg := knowledge.NewRegistry(knowledge.NewMemStore())
+	f, err := reg.Curate(knowledge.KindAttck, "T1055", "Process Injection", nil, "seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Analyzer{registry: reg}
+	ev := aiplane.EvidenceFrom(pipeline.SubmissionResult{
+		Findings: []pipeline.Finding{{Engine: "mal-capa", Attck: "T1055.001"}},
+	})
+	raw, tiers := a.retrievePriors(ev)
+	if raw == nil {
+		t.Fatal("a sub-technique of a curated parent must produce an L0.5 lead")
+	}
+	s := string(raw)
+	if !strings.Contains(s, "T1055") || !strings.Contains(s, "L0.5") {
+		t.Fatalf("expected an L0.5 lead to the parent T1055: %s", s)
+	}
+	if strings.Contains(s, f.ID) {
+		t.Fatalf("an L0.5 lead must NOT carry a fact id (non-citable): %s", s)
+	}
+	if len(tiers) != 1 || tiers[0] != "L0.5" {
+		t.Fatalf("tiers must report L0.5 (a near match, not exact), got %v", tiers)
+	}
+}
+
+func TestGateActivityRecordsRetrievalTiers(t *testing.T) {
+	// #24: the ledger records the ACTUAL tiers the retrieval consulted, not "L0".
+	gate, factID := seededGate(t)
+	led := aiplane.NewLedger()
+	a := &Analyzer{gate: gate, agentLedger: led}
+	prop := []byte(`{"hypotheses":[{"kind":"technique","claim":"x","confidence":"LOW","citations":[{"fact_id":"` + factID + `","kind":"attck","key":"T1055"}]}]}`)
+	if _, err := a.GateActivity(context.Background(), GateInput{
+		Result:         pipeline.SubmissionResult{SubmissionID: "s"},
+		Proposal:       prop,
+		RetrievalTiers: []string{"L0", "L0.5"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entries := led.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected one ledger entry, got %d", len(entries))
+	}
+	if got := entries[0].RetrievalTiers; len(got) != 2 || got[0] != "L0" || got[1] != "L0.5" {
+		t.Fatalf("ledger must record the actual retrieval tiers, got %v", got)
 	}
 }
 
