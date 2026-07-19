@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/aiplane"
@@ -106,6 +107,51 @@ func TestAgentGraphUnconfiguredIsNoOp(t *testing.T) {
 	out := runGraph(t, a, in)
 	if out.Verdict != pipeline.Malicious || len(out.Findings) != 1 || out.NeedsReview {
 		t.Fatalf("an unconfigured graph must return the deterministic result unchanged: %+v", out)
+	}
+}
+
+func TestRetrievePriorsFromKB(t *testing.T) {
+	// the spine-side Correlator: an ATT&CK technique in the evidence that is a known
+	// L0 fact is returned as a CITABLE prior (with the real fact id the gate checks).
+	reg := knowledge.NewRegistry(knowledge.NewMemStore())
+	f, err := reg.Curate(knowledge.KindAttck, "T1055", "Process Injection", nil, "seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Analyzer{registry: reg}
+	ev := aiplane.EvidenceFrom(pipeline.SubmissionResult{
+		Findings: []pipeline.Finding{{Engine: "mal-capa", Attck: "T1055"}, {Engine: "mal-yara", Attck: "T9999"}},
+	})
+	raw := a.retrievePriors(ev)
+	if raw == nil {
+		t.Fatal("a known ATT&CK technique in the evidence must produce a prior")
+	}
+	// the known technique resolves to its real fact id; the unknown one does not.
+	s := string(raw)
+	if !strings.Contains(s, f.ID) || !strings.Contains(s, "T1055") {
+		t.Fatalf("prior missing the curated fact id: %s", s)
+	}
+	if strings.Contains(s, "T9999") {
+		t.Fatalf("an unknown technique must not become a prior: %s", s)
+	}
+	// no KB wired -> no priors, never a panic.
+	if (&Analyzer{}).retrievePriors(ev) != nil {
+		t.Fatal("no registry must yield no priors")
+	}
+}
+
+func TestGroundIOCsDropsFabricated(t *testing.T) {
+	// B2: only IOCs actually present in the trusted evidence survive; a fabricated
+	// one is dropped, never accepted from the agent's paraphrase.
+	ev := aiplane.EvidenceFrom(pipeline.SubmissionResult{
+		Findings: []pipeline.Finding{{Engine: "mal-floss", Detail: "beacon to acme-c2.example/gate"}},
+	})
+	kept := groundIOCs([]aiplane.ProposedIOC{
+		{Type: "domain", Value: "acme-c2.example"},      // in the evidence -> kept
+		{Type: "domain", Value: "totally-invented.bad"}, // fabricated -> dropped
+	}, ev)
+	if len(kept) != 1 || kept[0].Value != "acme-c2.example" {
+		t.Fatalf("only evidence-grounded IOCs may survive: %+v", kept)
 	}
 }
 

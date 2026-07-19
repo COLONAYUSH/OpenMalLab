@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/aiplane"
+	"github.com/COLONAYUSH/OpenMalLab/internal/knowledge"
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -202,12 +203,14 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 	}
 	want := plannedSet(plan.Agents)
 
-	// Correlator: priors passed as context to the reasoners (raw, re-serialized).
-	var priors json.RawMessage
+	// deterministic KB retrieval - the Correlator's real function. the Python roster
+	// has no KB access, so the SPINE retrieves independently (exactly what the
+	// citation-verification design requires) and hands the reasoners known facts as
+	// CITABLE priors, each with the real L0 fact id the gate will re-verify. the
+	// Correlator agent additionally reasons over them for narrative leads.
+	priors := a.retrievePriors(ev)
 	if want["correlator"] {
-		if raw, err := a.agents.call(ctx, "correlator", agentReq{Evidence: ev}); err == nil {
-			priors = raw
-		}
+		_, _ = a.agents.call(ctx, "correlator", agentReq{Evidence: ev, Priors: priors})
 	}
 
 	var hyps []aiplane.Hypothesis
@@ -240,7 +243,7 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 		if raw, err := a.agents.call(ctx, "ioc_extractor", agentReq{Evidence: ev}); err == nil {
 			var s agentIOCSet
 			if json.Unmarshal(raw, &s) == nil {
-				iocs = s.IOCs
+				iocs = groundIOCs(s.IOCs, ev) // B2: only IOCs actually present in the trusted evidence
 			}
 		}
 	}
@@ -451,6 +454,67 @@ func (a *Analyzer) RecordOutcomeActivity(ctx context.Context, in RecordInput) er
 		}
 	}
 	return nil
+}
+
+// retrievePriors is the deterministic side of the Correlator: it queries L0 for
+// facts that match this submission's evidence (the ATT&CK techniques it exhibited)
+// and returns them as CITABLE priors - each carrying the real L0 fact id, so a
+// reasoning agent handed a prior can cite it and the gate will verify it. this is
+// the actual "have we seen this?" retrieval, done spine-side because the roster
+// has no KB access. returns nil when nothing matches (no priors is a valid answer).
+func (a *Analyzer) retrievePriors(ev aiplane.Evidence) json.RawMessage {
+	if a.registry == nil {
+		return nil
+	}
+	type prior struct {
+		Kind       string `json:"kind"`
+		Key        string `json:"key"`
+		Relation   string `json:"relation"`
+		Confidence string `json:"confidence"`
+		FactID     string `json:"fact_id"`
+	}
+	var priors []prior
+	seen := map[string]bool{}
+	for _, it := range ev.Items {
+		if it.Attck == "" || seen[it.Attck] {
+			continue
+		}
+		seen[it.Attck] = true
+		if f, ok := a.registry.Lookup(knowledge.KindAttck, it.Attck); ok {
+			priors = append(priors, prior{Kind: "attck", Key: f.Key, Relation: "known-technique", Confidence: "HIGH", FactID: f.ID})
+		}
+	}
+	if len(priors) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(map[string]interface{}{"priors": priors})
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// groundIOCs enforces B2 (reconstruct from trusted): an agent-proposed IOC is kept
+// only if its value actually appears in the trusted, defanged evidence handed to
+// the model - it is never accepted from the agent's paraphrase alone. an invented
+// or hallucinated indicator is dropped. strict by design: the anti-fabrication
+// guard is worth the occasional over-drop of a reformatted value.
+func groundIOCs(iocs []aiplane.ProposedIOC, ev aiplane.Evidence) []aiplane.ProposedIOC {
+	var corpus strings.Builder
+	for _, it := range ev.Items {
+		corpus.WriteString(it.Detail)
+		corpus.WriteByte('\n')
+		corpus.WriteString(it.Path)
+		corpus.WriteByte('\n')
+	}
+	hay := corpus.String()
+	var kept []aiplane.ProposedIOC
+	for _, ioc := range iocs {
+		if v := strings.TrimSpace(ioc.Value); v != "" && strings.Contains(hay, v) {
+			kept = append(kept, ioc)
+		}
+	}
+	return kept
 }
 
 func (a *Analyzer) ledgerAppend(h aiplane.Handshake) {

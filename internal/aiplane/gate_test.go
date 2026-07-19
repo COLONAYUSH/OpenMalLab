@@ -243,6 +243,24 @@ func TestGateSignalsNeverPromoteUngrounded(t *testing.T) {
 	}
 }
 
+func TestGateNoFPInflationWithoutGrounding(t *testing.T) {
+	// edge-check #2 (verdict-inflation guard): a confident but UNGROUNDED claim on a
+	// benign submission must never be accepted - accepting it would let the AI
+	// inflate a benign file toward SUSPICIOUS enrichment (a false-positive DoS).
+	r := regWith(t)
+	p := Proposal{Hypotheses: []Hypothesis{{Kind: "capability", Claim: "definitely malicious", Confidence: "HIGH"}}}
+	res := NewGate(r).Evaluate(Evidence{Verdict: "BENIGN"}, p)
+	for _, gh := range res.Hypotheses {
+		if gh.Disposition == DispAccept {
+			t.Fatal("an ungrounded claim must never be accepted (no FP inflation without a curated citation)")
+		}
+	}
+	// and even an accept can never reach MALICIOUS - enrichment is capped.
+	if EnrichmentVerdict(DispAccept) == pipeline.Malicious {
+		t.Fatal("AI enrichment must never reach MALICIOUS")
+	}
+}
+
 func TestGateSignalsRefutedUngroundedDrops(t *testing.T) {
 	r := regWith(t)
 	// refuted + ungrounded drops even at HIGH confidence: the verifier kills it.

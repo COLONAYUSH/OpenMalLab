@@ -135,6 +135,7 @@ func main() {
 		}
 		a.agents = newHTTPAgentCaller(au)
 		a.gate = aiplane.NewGate(reg)
+		a.registry = reg // spine-side retrieval + citation source of truth
 		a.agentLedger = aiplane.NewLedger()
 		a.graph = knowledge.NewGraph(knowledge.NewMemGraph()) // tier-1 learning target (in-memory until a persistent store lands, ASK STORE-1)
 		a.grad = aiplane.NewGraduation()                      // fed by HITL outcomes (sec 14)

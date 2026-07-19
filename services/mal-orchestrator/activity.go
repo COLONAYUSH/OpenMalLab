@@ -90,6 +90,7 @@ type Analyzer struct {
 	gate        *aiplane.Gate
 	agentLedger *aiplane.Ledger
 	graph       *knowledge.Graph     // L1: tier-1 learning writes finalized facts here
+	registry    *knowledge.Registry  // L0: the spine-side retrieval + citation source of truth
 	grad        *aiplane.Graduation  // autonomy graduation (sec 14), fed by HITL outcomes
 	calibration *aiplane.Calibration // confidence calibration (sec 06/11), fed by HITL outcomes
 }
