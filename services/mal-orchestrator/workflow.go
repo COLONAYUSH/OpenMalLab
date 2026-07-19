@@ -31,6 +31,12 @@ const (
 	// we bound the SUMMED serialized size of findings, not the count, because a
 	// hostile detail can be up to the broker's 8 KiB, and stay well under 2 MiB.
 	maxFindingsBytes = 1 << 20
+
+	// per-submission ingest-bytes budget. maxIngestTotalBytes bounds ONE extraction
+	// (512 MiB); a branching archive runs up to maxArtifacts extractions, so without
+	// a submission-wide cap a decompression bomb could still amplify to tens of GiB
+	// of DISTINCT permanent vault writes across nodes. this bounds the whole tree.
+	maxSubmissionIngestBytes = 2 << 30 // 2 GiB per submission
 )
 
 // workItem is one node of the artifact tree waiting to be analyzed. path is the
@@ -136,6 +142,8 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 	queue := []workItem{{SHA256: in.SHA256, Path: "", Depth: 0}}
 	processed := 0
 	depthCapped := false // emit the depth-cap marker at most once
+	var submissionIngested int64
+	ingestCapped := false // emit the per-submission ingest-cap marker at most once
 
 	for len(queue) > 0 {
 		if processed >= maxArtifacts {
@@ -196,27 +204,48 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 		extractF := workflow.ExecuteActivity(ctx, a.ExtractActivity, artifact)
 		extractRep, ok := fold(item.Path, "mal-extract", extractF)
 		if ok {
-			for _, c := range extractRep.Children {
-				if item.Depth+1 <= maxDepth {
-					queue = append(queue, workItem{
-						SHA256: c.SHA256,
-						Path:   crumb(item.Path, c.Name),
-						Depth:  item.Depth + 1,
-					})
-					continue
-				}
-				if !depthCapped {
-					depthCapped = true
+			// accumulate this extraction's ingested bytes into the submission total.
+			submissionIngested += extractRep.IngestedBytes
+			if submissionIngested > maxSubmissionIngestBytes {
+				// budget spent: stop growing the tree so a branching decompression
+				// bomb cannot fill the shared vault. verified children stand; deeper
+				// ones are not analyzed. fail-closed: incomplete + SUSPICIOUS + marker.
+				if !ingestCapped {
+					ingestCapped = true
 					res.Incomplete = true
 					res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
 					res.Findings = append(res.Findings, pipeline.Finding{
 						Engine:     "mal-orchestrator",
-						Type:       "recursion-cap",
-						Detail:     "archive nesting exceeded the depth cap; deeper children were not analyzed",
+						Type:       "ingest-cap",
+						Detail:     "per-submission extracted-bytes budget reached; deeper children were not analyzed",
 						Verdict:    pipeline.Suspicious,
 						Confidence: pipeline.ConfLow,
 						Path:       item.Path,
 					})
+				}
+			} else {
+				for _, c := range extractRep.Children {
+					if item.Depth+1 <= maxDepth {
+						queue = append(queue, workItem{
+							SHA256: c.SHA256,
+							Path:   crumb(item.Path, c.Name),
+							Depth:  item.Depth + 1,
+						})
+						continue
+					}
+					if !depthCapped {
+						depthCapped = true
+						res.Incomplete = true
+						res.Verdict = pipeline.Max(res.Verdict, pipeline.Suspicious)
+						res.Findings = append(res.Findings, pipeline.Finding{
+							Engine:     "mal-orchestrator",
+							Type:       "recursion-cap",
+							Detail:     "archive nesting exceeded the depth cap; deeper children were not analyzed",
+							Verdict:    pipeline.Suspicious,
+							Confidence: pipeline.ConfLow,
+							Path:       item.Path,
+						})
+					}
 				}
 			}
 		}

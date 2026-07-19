@@ -283,6 +283,7 @@ func (a *Analyzer) ExtractActivity(ctx context.Context, in pipeline.SubmissionIn
 		verified = append(verified, pipeline.Child{SHA256: c.SHA256, Size: size, Name: c.Name})
 	}
 	rep.Children = verified
+	rep.IngestedBytes = ingestedTotal // surfaced so the workflow can bound the whole submission
 
 	logger.Info("extraction complete",
 		"submission", in.SubmissionID, "sha256", in.SHA256,

@@ -311,6 +311,10 @@ type EngineReport struct {
 	Children   []Child   `json:"children,omitempty"`
 	Verdict    Verdict   `json:"verdict"`
 	Incomplete bool      `json:"incomplete"`
+	// IngestedBytes is how many bytes of extracted children this engine wrote to
+	// the vault (mal-extract only), so the workflow can bound a whole submission's
+	// ingest across its many extractions, not just one.
+	IngestedBytes int64 `json:"ingested_bytes,omitempty"`
 }
 
 // SubmissionResult is the rolled-up, explainable outcome. every finding carries

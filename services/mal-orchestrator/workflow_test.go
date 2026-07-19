@@ -164,3 +164,44 @@ func TestFileTypeOf(t *testing.T) {
 		t.Fatalf("fileTypeOf empty=%q want empty", got)
 	}
 }
+
+// a branching decompression bomb: each extraction reports more ingested bytes
+// than the whole submission is allowed. the workflow must stop growing the tree
+// fail-closed (incomplete + SUSPICIOUS + an ingest-cap marker), not keep writing
+// distinct children into the shared vault across nodes.
+func TestSubmissionWorkflowIngestBudgetFailsClosed(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	a := &Analyzer{}
+	env.OnActivity(a.IdentifyActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-ident", Verdict: pipeline.Unknown,
+			Findings: []pipeline.Finding{{Engine: "mal-ident", Type: "file-type", Detail: "zip", Verdict: pipeline.Unknown}}}, nil)
+	env.OnActivity(a.StaticAnalyzeActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-static-yara", Verdict: pipeline.Unknown}, nil)
+	// the very first extraction already reports more than the per-submission budget.
+	env.OnActivity(a.ExtractActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-extract", Verdict: pipeline.Unknown,
+			IngestedBytes: maxSubmissionIngestBytes + 1,
+			Children:      []pipeline.Child{{SHA256: strings.Repeat("b", 64), Name: "inner.zip", Size: 10}}}, nil)
+
+	env.ExecuteWorkflow(SubmissionWorkflow, pipeline.SubmissionInput{SubmissionID: "s", SHA256: strings.Repeat("a", 64)})
+	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
+		t.Fatalf("workflow did not complete cleanly: %v", env.GetWorkflowError())
+	}
+	var res pipeline.SubmissionResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.Incomplete || res.Verdict < pipeline.Suspicious {
+		t.Fatalf("over-budget ingest must floor SUSPICIOUS+incomplete, got %v incomplete=%v", res.Verdict, res.Incomplete)
+	}
+	hasCap := false
+	for _, f := range res.Findings {
+		if f.Type == "ingest-cap" {
+			hasCap = true
+		}
+	}
+	if !hasCap {
+		t.Fatal("the per-submission ingest cap must emit a marker, not silently stop")
+	}
+}
