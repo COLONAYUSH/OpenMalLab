@@ -1,31 +1,77 @@
-# AI-analyst plane overlay (design sec 03/05). OFF by default: the base
-# deploy/compose.yaml runs deterministic-only, air-gap-clean. enable the plane with:
+# AI-analyst plane overlay (design sec 03/05). The base deploy/compose.yaml runs
+# deterministic-only and air-gap-clean; this overlay adds the jailed Pydantic-AI
+# roster AND a SOVEREIGN local model server, and turns the plane ON.
+#
+# ONE-TIME model provisioning (the model volume must be filled BEFORE `up`, because
+# the runtime model server sits on a no-egress network and cannot pull at runtime):
+#
+#   docker compose -f deploy/compose.yaml -f deploy/compose.ai.yaml --profile bootstrap run --rm model-bootstrap
+#
+# then bring the live stack up:
 #
 #   docker compose -f deploy/compose.yaml -f deploy/compose.ai.yaml up
 #
-# this adds the jailed Pydantic-AI roster service and points the orchestrator at
-# it (which flips on the SubmissionWorkflow -> AgentGraphWorkflow handoff). the
-# local model server (vLLM) and Langfuse are operator-provided (see ASK.md LLM-1 /
-# OBS-1): set their URLs in the environment; stub service blocks are at the bottom.
+# the ollama healthcheck asserts the MODEL is present (not just the server), and
+# mal-agents waits on it, so the plane can never come up half-provisioned. To use
+# the guarded CLOUD model instead of the local one, set MAL_MODEL_URL to the remote
+# endpoint + MAL_MODEL_KEY + MAL_ALLOW_CLOUD=1 (see provider.py / ASK.md LLM-3).
 services:
+  # sovereign local model server (OpenAI-compatible). serves the pre-provisioned
+  # model on the no-egress aiplane network - nothing leaves the box. it CANNOT pull
+  # at runtime (internal net); the one-time model-bootstrap below fills its volume.
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - openmallab-models:/root/.ollama
+    networks: [aiplane]
+    expose: ["11434"]
+    security_opt: [no-new-privileges]
+    restart: unless-stopped
+    healthcheck:
+      # healthy ONLY when the server is up AND the model is present, so a dependent
+      # service never starts against an unprovisioned model (the launch risk).
+      test: ["CMD-SHELL", "ollama show ${MAL_MODEL_NAME:-llama3.2:3b} >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+
+  # ONE-TIME model bootstrap (profile: bootstrap). runs on the DEFAULT egress-capable
+  # network, pulls the model into the shared volume, then exits. after it completes
+  # the runtime `ollama` above serves fully air-gapped. run it once (see header).
+  model-bootstrap:
+    image: ollama/ollama:latest
+    profiles: ["bootstrap"]
+    volumes:
+      - openmallab-models:/root/.ollama
+    networks: [default]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama serve & until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull ${MAL_MODEL_NAME:-llama3.2:3b} && echo 'model provisioned into openmallab-models'"]
+    restart: "no"
+
   mal-agents:
     build:
       context: ..
       dockerfile: services/mal-agents/Dockerfile
     image: openmallab/mal-agents:m0
     environment:
-      # local model endpoint (vLLM, OpenAI-compatible). unset -> the deterministic
-      # in-process test model, so the roster runs before a model is provisioned.
-      MAL_MODEL_URL: ${MAL_MODEL_URL:-}
-      MAL_MODEL_NAME: ${MAL_MODEL_NAME:-local}
-      # cloud egress is OFF unless BOTH a non-loopback MAL_MODEL_URL and this explicit
-      # opt-in are set (see provider.py). the key is passed only when provided.
+      # SOVEREIGN default: the local ollama container on the no-egress net. a
+      # container/compose-service host is sovereign (no MAL_ALLOW_CLOUD needed); see
+      # provider.py. override MAL_MODEL_URL for the guarded cloud path.
+      MAL_MODEL_URL: ${MAL_MODEL_URL:-http://ollama:11434}
+      MAL_MODEL_NAME: ${MAL_MODEL_NAME:-llama3.2:3b}
+      # cloud egress is OFF unless a non-sovereign MAL_MODEL_URL AND this opt-in are
+      # both set. the key is passed only when provided.
       MAL_MODEL_KEY: ${MAL_MODEL_KEY:-}
       MAL_ALLOW_CLOUD: ${MAL_ALLOW_CLOUD:-}
       # optional self-hosted Langfuse. unset -> no tracing (air-gapped default).
       MAL_LANGFUSE_URL: ${MAL_LANGFUSE_URL:-}
       MAL_LANGFUSE_PUBLIC_KEY: ${MAL_LANGFUSE_PUBLIC_KEY:-}
       MAL_LANGFUSE_SECRET_KEY: ${MAL_LANGFUSE_SECRET_KEY:-}
+    # wait for the model to be provisioned + served before accepting work.
+    depends_on:
+      ollama:
+        condition: service_healthy
     # hardened + isolated: no privileges, read-only rootfs, non-root (Dockerfile),
     # bounded resources (a runaway or hostile payload cannot exhaust the host), and
     # on an internal network with no egress. the Go broker-analogue Validate is the
@@ -54,21 +100,21 @@ services:
 
 networks:
   # the AI plane is network-isolated: no route off the box. the model server and
-  # Langfuse, when added, live here too - sovereign by construction.
+  # Langfuse (when added) live here too - sovereign by construction.
   aiplane:
     internal: true
 
+volumes:
+  # holds the pre-provisioned model weights; filled once by model-bootstrap, then
+  # mounted by the air-gapped runtime ollama. named explicitly so the bootstrap and
+  # the runtime agree regardless of the compose project name.
+  openmallab-models:
+    name: openmallab-models
+
 # ---------------------------------------------------------------------------
-# Operator-provided services (ASK.md). Uncomment + configure for a live plane:
-#
-#   vllm:                      # the local model server (OpenAI-compatible)
-#     image: vllm/vllm-openai:latest
-#     command: ["--model", "<your-open-weight-model>"]
-#     networks: [aiplane]      # no egress; reachable by mal-agents only
-#     # set MAL_MODEL_URL=http://vllm:8000 in the mal-agents environment above.
-#
-#   langfuse:                  # self-hosted observability (its own postgres)
+# Optional: self-hosted Langfuse for observability (ASK.md OBS-1). Uncomment +
+# configure MAL_LANGFUSE_URL/PUBLIC_KEY/SECRET_KEY above.
+#   langfuse:
 #     image: langfuse/langfuse:latest
 #     networks: [aiplane]
-#     # set MAL_LANGFUSE_URL/PUBLIC_KEY/SECRET_KEY above.
 # ---------------------------------------------------------------------------
