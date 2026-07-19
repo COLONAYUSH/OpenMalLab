@@ -205,3 +205,38 @@ func TestSubmissionWorkflowIngestBudgetFailsClosed(t *testing.T) {
 		t.Fatal("the per-submission ingest cap must emit a marker, not silently stop")
 	}
 }
+
+// when the AI plane is enabled, the deterministic workflow hands off to the
+// enrichment child (ABANDON) and completes immediately with its verdict UNCHANGED
+// - the AI plane can never alter or delay the spine.
+func TestSubmissionWorkflowStartsEnrichmentChild(t *testing.T) {
+	t.Setenv("MAL_AGENTS_URL", "http://127.0.0.1:9") // enable the handoff
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	a := &Analyzer{} // no agents wired: the child's roster activity no-ops
+	env.OnActivity(a.IdentifyActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-ident", Verdict: pipeline.Unknown,
+			Findings: []pipeline.Finding{{Engine: "mal-ident", Type: "file-type", Detail: "txt", Verdict: pipeline.Unknown}}}, nil)
+	env.OnActivity(a.StaticAnalyzeActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-static-yara", Verdict: pipeline.Unknown}, nil)
+	env.OnActivity(a.ExtractActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-extract", Verdict: pipeline.Unknown}, nil)
+	// the enrichment child + its activities must be registered so the handoff runs.
+	env.RegisterWorkflow(AgentGraphWorkflow)
+	env.RegisterActivity(a.RunRosterActivity)
+	env.RegisterActivity(a.GateActivity)
+	env.RegisterActivity(a.IngestLearningActivity)
+	env.RegisterActivity(a.RecordOutcomeActivity)
+
+	env.ExecuteWorkflow(SubmissionWorkflow, pipeline.SubmissionInput{SubmissionID: "s", SHA256: strings.Repeat("a", 64)})
+	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
+		t.Fatalf("workflow did not complete cleanly with the enrichment handoff: %v", env.GetWorkflowError())
+	}
+	var res pipeline.SubmissionResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Verdict != pipeline.Unknown {
+		t.Fatalf("the enrichment handoff must not change the deterministic verdict, got %v", res.Verdict)
+	}
+}

@@ -1,0 +1,66 @@
+# AI-analyst plane overlay (design sec 03/05). OFF by default: the base
+# deploy/compose.yaml runs deterministic-only, air-gap-clean. enable the plane with:
+#
+#   docker compose -f deploy/compose.yaml -f deploy/compose.ai.yaml up
+#
+# this adds the jailed Pydantic-AI roster service and points the orchestrator at
+# it (which flips on the SubmissionWorkflow -> AgentGraphWorkflow handoff). the
+# local model server (vLLM) and Langfuse are operator-provided (see ASK.md LLM-1 /
+# OBS-1): set their URLs in the environment; stub service blocks are at the bottom.
+services:
+  mal-agents:
+    build:
+      context: ..
+      dockerfile: services/mal-agents/Dockerfile
+    image: openmallab/mal-agents:m0
+    environment:
+      # local model endpoint (vLLM, OpenAI-compatible). unset -> the deterministic
+      # in-process test model, so the roster runs before a model is provisioned.
+      MAL_MODEL_URL: ${MAL_MODEL_URL:-}
+      MAL_MODEL_NAME: ${MAL_MODEL_NAME:-local}
+      # optional self-hosted Langfuse. unset -> no tracing (air-gapped default).
+      MAL_LANGFUSE_URL: ${MAL_LANGFUSE_URL:-}
+      MAL_LANGFUSE_PUBLIC_KEY: ${MAL_LANGFUSE_PUBLIC_KEY:-}
+      MAL_LANGFUSE_SECRET_KEY: ${MAL_LANGFUSE_SECRET_KEY:-}
+    # hardened + isolated: no privileges, read-only rootfs, non-root (Dockerfile),
+    # and on an internal network with no egress. the Go broker-analogue Validate is
+    # the trust boundary for everything this service returns.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges]
+    networks: [aiplane]
+    expose: ["8099"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8099/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # point the orchestrator at the roster and join the isolated AI-plane network.
+  # MAL_AGENTS_URL both enables the workflow handoff and names the roster endpoint.
+  orchestrator:
+    environment:
+      MAL_AGENTS_URL: http://mal-agents:8099
+    networks: [default, aiplane]
+
+networks:
+  # the AI plane is network-isolated: no route off the box. the model server and
+  # Langfuse, when added, live here too - sovereign by construction.
+  aiplane:
+    internal: true
+
+# ---------------------------------------------------------------------------
+# Operator-provided services (ASK.md). Uncomment + configure for a live plane:
+#
+#   vllm:                      # the local model server (OpenAI-compatible)
+#     image: vllm/vllm-openai:latest
+#     command: ["--model", "<your-open-weight-model>"]
+#     networks: [aiplane]      # no egress; reachable by mal-agents only
+#     # set MAL_MODEL_URL=http://vllm:8000 in the mal-agents environment above.
+#
+#   langfuse:                  # self-hosted observability (its own postgres)
+#     image: langfuse/langfuse:latest
+#     networks: [aiplane]
+#     # set MAL_LANGFUSE_URL/PUBLIC_KEY/SECRET_KEY above.
+# ---------------------------------------------------------------------------

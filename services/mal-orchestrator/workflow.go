@@ -1,10 +1,12 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"time"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
+	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
@@ -255,7 +257,34 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 	// score. the severity verdict above is untouched (fail-closed); this only
 	// tells a queue how much to care.
 	res.Score, res.Confidence = pipeline.ScoreFindings(res.Findings)
+
+	// hand off to the async AI-enrichment plane if it is enabled, as an ABANDON
+	// child: this deterministic workflow completes immediately with its verdict,
+	// and nothing the AI plane does can change or delay it (agents propose, the
+	// spine disposes). off by default; the SideEffect reads the same env flag that
+	// wires the plane at all, recorded in history so replay is deterministic.
+	if aiEnrichmentEnabled(ctx) {
+		cctx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			WorkflowID:        in.SubmissionID + "-enrich",
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_ABANDON,
+		})
+		child := workflow.ExecuteChildWorkflow(cctx, AgentGraphWorkflow, res)
+		// wait only until the child has STARTED, then abandon it; never wait for its
+		// result, so the verdict is returned without any AI latency.
+		_ = child.GetChildWorkflowExecution().Get(ctx, nil)
+	}
 	return res, nil
+}
+
+// aiEnrichmentEnabled reports whether the AI-enrichment plane is wired. read once
+// via a SideEffect so the decision is recorded in workflow history and replay-safe
+// (reading the env directly in workflow code would be non-deterministic).
+func aiEnrichmentEnabled(ctx workflow.Context) bool {
+	var enabled bool
+	_ = workflow.SideEffect(ctx, func(workflow.Context) interface{} {
+		return os.Getenv("MAL_AGENTS_URL") != ""
+	}).Get(&enabled)
+	return enabled
 }
 
 // fileTypeOf pulls the identified file type out of an ident report's findings.
