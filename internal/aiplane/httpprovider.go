@@ -29,13 +29,15 @@ type HTTPProvider struct {
 	minimize bool // cloud egress gate: send only minimized evidence, never raw hostile bytes
 }
 
-// NewLocalProvider builds a provider for a LOCAL, OpenAI-compatible model server
-// (e.g. vLLM on 127.0.0.1). it refuses a non-loopback host: cloud egress is a
-// separate, explicit opt-in via NewCloudProvider, so the platform stays
-// air-gapped by default and a misconfigured URL fails closed rather than quietly
-// shipping evidence off-box.
+// NewLocalProvider builds a provider for a SOVEREIGN, OpenAI-compatible model
+// server: one reachable only on the box or a no-egress private network (loopback
+// like vLLM on 127.0.0.1, a private/link-local IP, or a dotless container/service
+// name like "ollama" on an internal compose network). it refuses a public FQDN or
+// public IP: reaching the outside world is a separate, explicit opt-in via
+// NewCloudProvider, so the platform stays air-gapped by default and a misconfigured
+// URL fails closed rather than quietly shipping evidence off-box.
 func NewLocalProvider(baseURL, model string) (*HTTPProvider, error) {
-	if err := requireLoopback(baseURL); err != nil {
+	if err := requireSovereignHost(baseURL); err != nil {
 		return nil, err
 	}
 	return newHTTP(baseURL, model), nil
@@ -85,21 +87,54 @@ func newHTTP(baseURL, model string) *HTTPProvider {
 	}
 }
 
-// requireLoopback rejects any base URL whose host is not a loopback address.
-func requireLoopback(raw string) error {
+// requireSovereignHost rejects a base URL whose host could reach off the box / LAN.
+// a host is SOVEREIGN (no explicit cloud opt-in needed) when it is loopback, an
+// RFC1918 / ULA private IP (a container or LAN address on a no-egress network), or
+// a hostname that is dotless (a container / compose service name like "ollama",
+// never a public FQDN) or an internal suffix (.local / .internal / .lan). a dotted
+// public FQDN or a public IP is refused here; that egress is the explicit
+// NewCloudProvider opt-in. link-local (169.254 / fe80) is deliberately NOT
+// sovereign - it is the cloud-metadata SSRF vector, never a real model host.
+func requireSovereignHost(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("aiplane: bad base url: %w", err)
 	}
 	host := u.Hostname()
-	if host == "localhost" {
+	if host == "" {
+		return fmt.Errorf("aiplane: base url has no host: %q", raw)
+	}
+	if strings.EqualFold(host, "localhost") {
 		return nil
 	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("aiplane: local provider requires a loopback host, got %q (use NewCloudProvider to allow egress)", host)
+	if ip := net.ParseIP(host); ip != nil {
+		if isSovereignIP(ip) {
+			return nil
+		}
+		return fmt.Errorf("aiplane: local provider requires a loopback/private host, got public IP %q (use NewCloudProvider to allow egress)", host)
 	}
-	return nil
+	if isSovereignHostname(host) {
+		return nil
+	}
+	return fmt.Errorf("aiplane: local provider requires a loopback/private/container host, got %q (use NewCloudProvider to allow egress)", host)
+}
+
+// isSovereignIP is true for addresses confined to the box or a no-egress private
+// network: loopback and RFC1918/ULA private. link-local is excluded on purpose
+// (169.254.169.254 is the cloud-metadata SSRF target, never a real model host).
+func isSovereignIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate()
+}
+
+// isSovereignHostname treats a dotless single-label name (a container/compose
+// service like "ollama") or an internal-suffix name as sovereign; a dotted public
+// FQDN is not.
+func isSovereignHostname(host string) bool {
+	h := strings.ToLower(host)
+	if !strings.Contains(h, ".") {
+		return true
+	}
+	return strings.HasSuffix(h, ".local") || strings.HasSuffix(h, ".internal") || strings.HasSuffix(h, ".lan")
 }
 
 // Name identifies the provider in errors and the handshake ledger.

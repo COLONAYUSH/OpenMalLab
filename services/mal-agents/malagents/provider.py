@@ -67,13 +67,25 @@ def _host_of(url: str) -> str:
     return parsed.hostname or ""
 
 
-def _is_loopback(host: str) -> bool:
-    if host == "" or host.lower() == "localhost":
-        return host != ""  # "" is not a host; "localhost" is loopback
+def _is_sovereign_host(host: str) -> bool:
+    """True for a host confined to the box or a no-egress private network: loopback,
+    RFC1918/ULA private, a dotless container/compose service name (e.g. "ollama"), or
+    an internal suffix (.local/.internal/.lan). link-local (169.254/fe80) is NOT
+    sovereign - it is the cloud-metadata SSRF vector; a dotted public FQDN or public
+    IP is not sovereign either (that egress needs the explicit MAL_ALLOW_CLOUD)."""
+    if host == "":
+        return False
+    h = host.lower()
+    if h == "localhost":
+        return True
     try:
-        return ipaddress.ip_address(host).is_loopback
+        ip = ipaddress.ip_address(host)
+        return bool(ip.is_loopback or (ip.is_private and not ip.is_link_local))
     except ValueError:
-        return False  # a non-numeric, non-localhost name is treated as remote
+        pass
+    if "." not in h:
+        return True  # a dotless container/compose service name
+    return h.endswith((".local", ".internal", ".lan"))
 
 
 def get_model():
@@ -90,14 +102,15 @@ def get_model():
         return TestModel()
 
     host = _host_of(url)
-    is_cloud = not _is_loopback(host)
+    is_cloud = not _is_sovereign_host(host)
     if is_cloud and not cloud_enabled():
         raise RuntimeError(
-            "MAL_MODEL_URL points at a non-loopback host (%r) but MAL_ALLOW_CLOUD is "
-            "not set. The sovereign default is air-gapped: a remote model endpoint "
-            "lets evidence leave the box, so it must be an explicit, audited opt-in. "
-            "Set MAL_ALLOW_CLOUD=1 to acknowledge egress, or point MAL_MODEL_URL at a "
-            "local (loopback) model server." % host
+            "MAL_MODEL_URL points at a non-sovereign host (%r) but MAL_ALLOW_CLOUD is "
+            "not set. The sovereign default is air-gapped: only a loopback, private, or "
+            "container/compose-service model host is allowed by default; a public "
+            "endpoint lets evidence leave the box and must be an explicit, audited "
+            "opt-in. Set MAL_ALLOW_CLOUD=1 to acknowledge egress, or point "
+            "MAL_MODEL_URL at a local/container model server." % host
         )
     if is_cloud:
         _use_system_trust_store()  # tolerate corporate CA on the opt-in cloud path

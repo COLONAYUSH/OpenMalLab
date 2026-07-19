@@ -162,17 +162,28 @@ func TestCloudProviderMinimizesEgress(t *testing.T) {
 	}
 }
 
-func TestLocalProviderLoopbackGuard(t *testing.T) {
-	ok := []string{"http://127.0.0.1:8000", "http://localhost:1234/v1", "http://[::1]:8000"}
+func TestLocalProviderSovereignGuard(t *testing.T) {
+	// sovereign: loopback, RFC1918/ULA private (a container/LAN model host), a dotless
+	// container/compose service name, and internal-suffix names.
+	ok := []string{
+		"http://127.0.0.1:8000", "http://localhost:1234/v1", "http://[::1]:8000",
+		"http://10.0.0.5:8000", "http://172.20.0.9:11434", "http://192.168.1.20:8000",
+		"http://ollama:11434", "http://ollama:11434/v1", "http://model.internal:8000", "http://vllm.local",
+	}
 	for _, u := range ok {
 		if _, err := NewLocalProvider(u, "m"); err != nil {
-			t.Fatalf("loopback %q should be allowed: %v", u, err)
+			t.Fatalf("sovereign host %q should be allowed: %v", u, err)
 		}
 	}
-	bad := []string{"http://evil.example.com", "http://10.0.0.5:8000", "https://api.openai.com", "http://169.254.169.254"}
+	// NOT sovereign (require the explicit cloud opt-in): public FQDNs, public IPs, and
+	// link-local (the cloud-metadata SSRF vector).
+	bad := []string{
+		"http://evil.example.com", "https://api.openai.com", "https://ollama.com",
+		"http://8.8.8.8:8000", "http://169.254.169.254",
+	}
 	for _, u := range bad {
 		if _, err := NewLocalProvider(u, "m"); err == nil {
-			t.Fatalf("non-loopback %q must be refused by the local provider", u)
+			t.Fatalf("non-sovereign %q must be refused by the local provider", u)
 		}
 	}
 }
