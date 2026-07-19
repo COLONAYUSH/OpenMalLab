@@ -118,6 +118,29 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// enrichmentOverlay returns the AI-enriched result for a submission if its async
+// enrichment workflow (<id>-enrich) has COMPLETED, else (base, false). It is
+// strictly non-blocking: it Describes first and only fetches a result that is
+// already durable, so a pending or absent enrichment (the air-gapped default, when
+// the plane is off there is no such workflow) never delays or alters the
+// deterministic answer. The enriched result is a raise-only superset of the
+// deterministic one (capped at SUSPICIOUS by construction), so surfacing it can
+// only add mal-ai findings and raise the review flag, never lower a verdict.
+func (s *server) enrichmentOverlay(ctx context.Context, id string, base pipeline.SubmissionResult) (pipeline.SubmissionResult, bool) {
+	eid := id + "-enrich"
+	dctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	desc, err := s.tc.DescribeWorkflowExecution(dctx, eid, "")
+	if err != nil || desc.GetWorkflowExecutionInfo().GetStatus() != enums.WORKFLOW_EXECUTION_STATUS_COMPLETED {
+		return base, false
+	}
+	var enr pipeline.SubmissionResult
+	if err := s.tc.GetWorkflow(dctx, eid, "").Get(dctx, &enr); err != nil || enr.SubmissionID == "" {
+		return base, false
+	}
+	return enr, true
+}
+
 func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/submissions/")
 	if id == "" {
@@ -133,6 +156,8 @@ func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"submission_id": id, "status": "running"})
 		return
 	}
+	// overlay the async AI enrichment if it has landed (durable, raise-only).
+	res, enriched := s.enrichmentOverlay(ctx, id, res)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"submission_id": res.SubmissionID,
 		"sha256":        res.SHA256,
@@ -142,6 +167,8 @@ func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 		"score":         res.Score,
 		"confidence":    res.Confidence.String(),
 		"incomplete":    res.Incomplete,
+		"needs_review":  res.NeedsReview,
+		"enriched":      enriched,
 		"findings":      res.Findings,
 	})
 }
@@ -156,6 +183,8 @@ type summary struct {
 	Score        int    `json:"score"`
 	Confidence   string `json:"confidence"`
 	Incomplete   bool   `json:"incomplete"`
+	NeedsReview  bool   `json:"needs_review"`
+	Enriched     bool   `json:"enriched"`
 	Status       string `json:"status"`
 	Received     string `json:"received,omitempty"`
 }
@@ -193,6 +222,9 @@ func (s *server) handleQueue(w http.ResponseWriter, r *http.Request) {
 			var res pipeline.SubmissionResult
 			gctx, gcancel := context.WithTimeout(ctx, 4*time.Second)
 			if err := s.tc.GetWorkflow(gctx, id, e.GetExecution().GetRunId()).Get(gctx, &res); err == nil {
+				// overlay the async AI enrichment if it has landed (raise-only superset);
+				// pending/absent enrichment leaves the deterministic row unchanged.
+				res, row.Enriched = s.enrichmentOverlay(gctx, id, res)
 				row.Name = res.Filename
 				row.SHA256 = res.SHA256
 				row.FileType = res.FileType
@@ -200,6 +232,7 @@ func (s *server) handleQueue(w http.ResponseWriter, r *http.Request) {
 				row.Score = res.Score
 				row.Confidence = res.Confidence.String()
 				row.Incomplete = res.Incomplete
+				row.NeedsReview = res.NeedsReview
 				row.Status = "done"
 			}
 			gcancel()
