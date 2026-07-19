@@ -193,6 +193,37 @@ func TestRetrievePriorsFromKB(t *testing.T) {
 	}
 }
 
+func TestNoveltyOfMeasuredFromL0(t *testing.T) {
+	// #14: novelty is measured deterministically from L0 knowledge, not the model.
+	reg := knowledge.NewRegistry(knowledge.NewMemStore())
+	if _, err := reg.Curate(knowledge.KindAttck, "T1055", "Process Injection", nil, "seed"); err != nil {
+		t.Fatal(err)
+	}
+	a := &Analyzer{registry: reg}
+	mk := func(attcks ...string) aiplane.Evidence {
+		var fs []pipeline.Finding
+		for _, at := range attcks {
+			fs = append(fs, pipeline.Finding{Engine: "mal-capa", Attck: at})
+		}
+		return aiplane.EvidenceFrom(pipeline.SubmissionResult{Findings: fs})
+	}
+	if n := a.noveltyOf(mk("T1055", "T9999")); n != 0.5 {
+		t.Fatalf("one known + one unknown technique should be novelty 0.5, got %v", n)
+	}
+	if n := a.noveltyOf(mk("T1055")); n != 0 {
+		t.Fatalf("an all-known artifact should be novelty 0, got %v", n)
+	}
+	if n := a.noveltyOf(mk("T9999", "T8888")); n != 1 {
+		t.Fatalf("an all-unknown artifact should be novelty 1, got %v", n)
+	}
+	if n := a.noveltyOf(mk()); n != 0 {
+		t.Fatalf("no ATT&CK signal is uncertainty, not novelty: want 0, got %v", n)
+	}
+	if n := (&Analyzer{}).noveltyOf(mk("T1055")); n != 0 {
+		t.Fatalf("no registry wired must yield 0 (no false novelty), got %v", n)
+	}
+}
+
 func TestGroundIOCsDropsFabricated(t *testing.T) {
 	// B2: only IOCs actually present in the trusted evidence survive; a fabricated
 	// one is dropped, never accepted from the agent's paraphrase.

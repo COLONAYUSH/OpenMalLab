@@ -141,11 +141,6 @@ type agentIOCSet struct {
 	IOCs []aiplane.ProposedIOC `json:"iocs"`
 }
 
-type agentNovelty struct {
-	Score   float64 `json:"score"`
-	Nearest string  `json:"nearest"`
-}
-
 type agentReport struct {
 	Md string `json:"md"`
 }
@@ -216,7 +211,11 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 	var hyps []aiplane.Hypothesis
 	var iocs []aiplane.ProposedIOC
 	summary := ""
-	novelty := 0.0
+	// #14: the gate's novelty axis is measured DETERMINISTICALLY spine-side (how much
+	// of this artifact's ATT&CK signal L0 does not know), never trusted from the
+	// model's self-reported score - so a model cannot under-report novelty to slip a
+	// genuinely new artifact past the escalation.
+	spineNovelty := a.noveltyOf(ev)
 
 	if want["family_hypothesizer"] {
 		if raw, err := a.agents.call(ctx, "family_hypothesizer", agentReq{Evidence: ev, Priors: priors}); err == nil {
@@ -248,12 +247,9 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 		}
 	}
 	if want["novelty_detector"] {
-		if raw, err := a.agents.call(ctx, "novelty_detector", agentReq{Evidence: ev}); err == nil {
-			var n agentNovelty
-			if json.Unmarshal(raw, &n) == nil {
-				novelty = n.Score
-			}
-		}
+		// the novelty AGENT still runs for its narrative, but its self-reported score
+		// does NOT gate - the gate's novelty signal is spineNovelty (measured above).
+		_, _ = a.agents.call(ctx, "novelty_detector", agentReq{Evidence: ev})
 	}
 	if want["report_writer"] {
 		if raw, err := a.agents.call(ctx, "report_writer", agentReq{Evidence: ev}); err == nil {
@@ -270,7 +266,7 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 	// means refuted (fail-closed: an unverifiable claim cannot ground autonomy).
 	signals := make([]aiplane.GateSignals, len(hyps))
 	for i, h := range hyps {
-		sig := aiplane.GateSignals{Novelty: novelty}
+		sig := aiplane.GateSignals{Novelty: spineNovelty}
 		// calibration (downgrade-only): a category whose confident claims have been
 		// historically wrong gets its self-report recalibrated down before the gate.
 		if a.calibration != nil {
@@ -458,6 +454,35 @@ func (a *Analyzer) RecordOutcomeActivity(ctx context.Context, in RecordInput) er
 		}
 	}
 	return nil
+}
+
+// noveltyOf measures how novel this artifact is DETERMINISTICALLY, spine-side: the
+// fraction of its distinct ATT&CK signal that L0 does NOT already know. all
+// techniques known -> 0 (commodity); none known -> 1 (unfamiliar, should escalate).
+// this is the gate's novelty axis - a measured value, never the model's self-report,
+// so a model cannot under-report novelty to slip a genuinely new artifact past the
+// escalation. no ATT&CK signal at all yields 0: absence of evidence is uncertainty,
+// not novelty (a confident ungrounded claim already escalates on its own).
+func (a *Analyzer) noveltyOf(ev aiplane.Evidence) float64 {
+	if a.registry == nil {
+		return 0
+	}
+	total, known := 0, 0
+	seen := map[string]bool{}
+	for _, it := range ev.Items {
+		if it.Attck == "" || seen[it.Attck] {
+			continue
+		}
+		seen[it.Attck] = true
+		total++
+		if _, ok := a.registry.Lookup(knowledge.KindAttck, it.Attck); ok {
+			known++
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return 1.0 - float64(known)/float64(total)
 }
 
 // retrievePriors is the deterministic side of the Correlator: it queries L0 for
