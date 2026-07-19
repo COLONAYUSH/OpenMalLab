@@ -378,8 +378,13 @@ func (m *MemStore) Merge(id string, decide func(existing Fact, existed bool) (bo
 		}
 		return result.clone(), nil
 	}
-	if !ok && len(m.facts) >= m.max {
-		return Fact{}, fmt.Errorf("knowledge: store at capacity (%d facts)", m.max)
+	// the capacity cap bounds the ATTACKER-influenceable ingest tier only. a new
+	// CURATED key (human/CI-gated, authoritative) is ALWAYS admitted, even over the
+	// cap - otherwise a flood of ingest facts could fill the store and starve a
+	// genuinely curated fact, denying grounding to a real analysis. ingest is what
+	// gets rejected at capacity; curated cannot be.
+	if !ok && result.Trust != TrustCurated && len(m.facts) >= m.max {
+		return Fact{}, fmt.Errorf("knowledge: store at ingest capacity (%d facts)", m.max)
 	}
 	m.facts[id] = result
 	return result.clone(), nil

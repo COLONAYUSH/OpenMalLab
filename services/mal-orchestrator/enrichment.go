@@ -49,10 +49,14 @@ func (a *Analyzer) EnrichWithAIActivity(ctx context.Context, res pipeline.Submis
 	}
 	gr, hs, err := a.aiplane.Enrich(ctx, res)
 	out := AIEnrichment{
-		Enabled:    true,
-		Provider:   hs.Provider,
-		Outcome:    hs.Outcome,
-		LedgerHead: a.aiplane.Ledger().Head(),
+		Enabled:  true,
+		Provider: hs.Provider,
+		Outcome:  hs.Outcome,
+		// the SEALED hash of THIS enrichment's ledger entry, taken from the handshake
+		// Append returned - not a fresh Ledger().Head() read, which races with a
+		// concurrent submission's append on the shared ledger and could record another
+		// entry's head as this one's anchor.
+		LedgerHead: hs.Hash,
 	}
 	if err != nil {
 		// caged: the failure is recorded in the ledger, but is not fatal - this run

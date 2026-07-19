@@ -378,17 +378,24 @@ func TestControlCharKeysRejected(t *testing.T) {
 
 func TestStoreCapacity(t *testing.T) {
 	r := NewRegistry(NewMemStoreWithCap(2))
-	if _, err := r.Curate(KindFamily, "a", "", nil, "s"); err != nil {
+	// fill to capacity with INGEST facts (the attacker-influenceable tier).
+	if _, err := r.Ingest(KindFamily, "a", "", "s"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Curate(KindFamily, "b", "", nil, "s"); err != nil {
+	if _, err := r.Ingest(KindFamily, "b", "", "s"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Curate(KindFamily, "c", "", nil, "s"); err == nil {
-		t.Fatal("a new key past capacity should be rejected")
+	// a new INGEST key past capacity is rejected: the cap bounds ingest growth.
+	if _, err := r.Ingest(KindFamily, "c", "", "s"); err == nil {
+		t.Fatal("a new ingest key past capacity should be rejected")
 	}
-	// an UPDATE to an existing key must still succeed at capacity.
-	if _, err := r.Curate(KindFamily, "a", "updated", nil, "s"); err != nil {
+	// a new CURATED key past capacity MUST still be admitted: curated is human-gated
+	// and authoritative, so a flood of ingest facts can never starve it (finding #19).
+	if _, err := r.Curate(KindFamily, "d", "", nil, "s"); err != nil {
+		t.Fatalf("a curated fact must be admitted even past the ingest cap: %v", err)
+	}
+	// an UPDATE to an existing key still succeeds at capacity (not a new key).
+	if _, err := r.Ingest(KindFamily, "a", "updated", "s"); err != nil {
 		t.Fatalf("update at capacity rejected: %v", err)
 	}
 }

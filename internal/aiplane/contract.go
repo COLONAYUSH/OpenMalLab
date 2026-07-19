@@ -287,6 +287,13 @@ func hasControlChars(s string) bool {
 // no "://"; \b avoids mangling words like "metadata:". case-insensitive.
 var dangerScheme = regexp.MustCompile(`(?i)\b(javascript|data|vbscript|file):`)
 
+// protoRelURL matches a protocol-relative URL start ("//host") - which carries no
+// "://" and so escapes the scheme defang, yet still renders as a live link that
+// adopts the viewer's scheme. it matches "//" at a boundary (start, or a non-word,
+// non-colon char, so an already-bracketed "[://]" and a mid-path "x//y" are left
+// alone) followed by a host character. neutralized to "[//]".
+var protoRelURL = regexp.MustCompile(`(^|[^\w:])//(\w)`)
+
 // defang makes a hostile-derived string inert for any consumer that renders or
 // logs it: it drops C0/C1 controls, DEL, Unicode format chars (bidi overrides,
 // zero-widths, BOM), line/paragraph separators, and variation selectors (the
@@ -303,7 +310,13 @@ func defang(s string) string {
 	for _, r := range s {
 		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) ||
 			r == 0x2028 || r == 0x2029 || unicode.Is(unicode.Cf, r) ||
-			unicode.Is(unicode.Variation_Selector, r) {
+			unicode.Is(unicode.Variation_Selector, r) ||
+			unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) ||
+			unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
+			// also drop default-ignorable code points (invisible Hangul/other fillers
+			// used to spoof filenames) and combining marks (Mn/Me - the zalgo and
+			// enclosing-mark carriers that corrupt rendered text). the citation path
+			// stays byte-for-byte; this is only for rendered prose.
 			continue
 		}
 		b.WriteRune(r)
@@ -311,5 +324,6 @@ func defang(s string) string {
 	out := b.String()
 	out = strings.ReplaceAll(out, "://", "[://]") // neutralizes every scheme://host, any case
 	out = dangerScheme.ReplaceAllString(out, "$1[:]")
+	out = protoRelURL.ReplaceAllString(out, "${1}[//]${2}") // protocol-relative //host
 	return out
 }
