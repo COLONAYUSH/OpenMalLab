@@ -53,6 +53,10 @@ services:
     build:
       context: ..
       dockerfile: services/mal-agents/Dockerfile
+      # the pip index credential (Artifactory) as a BuildKit secret, same as
+      # capa/floss - never an ARG/layer. absent on a clean net -> public PyPI.
+      secrets:
+        - pip_conf
     image: openmallab/mal-agents:m0
     environment:
       # SOVEREIGN default: the local ollama container on the no-egress net. a
