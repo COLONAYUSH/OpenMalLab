@@ -130,7 +130,16 @@ func main() {
 	if au := os.Getenv("MAL_AGENTS_URL"); au != "" {
 		// L0 exact + L0.5 fuzzy: seeding the registry also populates the SimIndex, so
 		// retrievePriors can surface near-but-not-exact curated facts as leads.
-		reg := knowledge.NewRegistryWithSim(knowledge.NewMemStore(), knowledge.NewSimIndex())
+		// the L0 store is PERSISTENT (survives a restart) when MAL_KNOWLEDGE_DB names a
+		// path, else in-memory. this is the registry the HITL outcome + tier-1 learning
+		// writeback curates into, so its durability is what lets a curated fact outlive a
+		// reboot; re-seeding a populated store on restart is a harmless idempotent refresh.
+		kstore, closeStore, err := knowledge.OpenStoreFromEnv()
+		if err != nil {
+			log.Fatalf("open knowledge store: %v", err)
+		}
+		defer closeStore()
+		reg := knowledge.NewRegistryWithSim(kstore, knowledge.NewSimIndex())
 		n, _, err := reg.SeedStarter()
 		if err != nil {
 			log.Fatalf("seed L0: %v", err)

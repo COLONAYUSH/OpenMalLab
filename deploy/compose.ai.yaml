@@ -105,6 +105,13 @@ services:
   orchestrator:
     environment:
       MAL_AGENTS_URL: http://mal-agents:8099
+      # PERSISTENT L0: curated knowledge (HITL gold labels + tier-1 learning) is
+      # written here and survives a restart, so the spine does not forget what an
+      # analyst taught it. on a named volume because the orchestrator rootfs is
+      # read-only; unset this to fall back to the ephemeral in-memory store.
+      MAL_KNOWLEDGE_DB: /knowledge/l0.db
+    volumes:
+      - openmallab-knowledge:/knowledge
     networks: [default, aiplane]
 
 networks:
@@ -119,6 +126,10 @@ volumes:
   # the runtime agree regardless of the compose project name.
   openmallab-models:
     name: openmallab-models
+  # persistent L0 knowledge (curated facts + learned gold labels). survives restarts
+  # so the spine keeps what analysts teach it; named so it is stable across projects.
+  openmallab-knowledge:
+    name: openmallab-knowledge
 
 # ---------------------------------------------------------------------------
 # Optional: self-hosted Langfuse for observability (ASK.md OBS-1). Uncomment +
