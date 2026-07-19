@@ -171,7 +171,15 @@ func TestLiveAutonomousAcceptFold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assembled proposal must validate: %v", err)
 	}
-	gr := a.gate.EvaluateWithSignals(aiplane.EvidenceFrom(res), prop, roster.Signals)
+	// isolate the earned-autonomy accept path from the SEPARATE, legitimate novelty
+	// escalation (novelty >= 0.85 escalates by design, and is exercised via the seam
+	// test). Zero only the novelty signal; keep the verifier's real Refuted signal,
+	// so this asserts precisely: grounded + verifier-confirmed + earned -> accept.
+	sigs := append([]aiplane.GateSignals(nil), roster.Signals...)
+	for i := range sigs {
+		sigs[i].Novelty = 0
+	}
+	gr := a.gate.EvaluateWithSignals(aiplane.EvidenceFrom(res), prop, sigs)
 
 	sawGroundedTechnique := false
 	for i, gh := range gr.Hypotheses {
