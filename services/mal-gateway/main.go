@@ -286,6 +286,67 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// mirrors the orchestrator HITL contract (services/mal-orchestrator/hitl.go). the
+// gateway only relays: it queries the pending review from the enrichment workflow
+// and signals the analyst's decision back. kept JSON-compatible with that contract.
+const (
+	reviewQueryName  = "pending-review"
+	reviewSignalName = "review-decision"
+)
+
+type reviewRequest struct {
+	SubmissionID string   `json:"submission_id"`
+	Question     string   `json:"question"`
+	Kinds        []string `json:"kinds"`
+	Reasons      []string `json:"reasons"`
+}
+
+type reviewDecision struct {
+	Approved bool   `json:"approved"`
+	Note     string `json:"note"`
+}
+
+// handleReviewGet relays the pending HITL review task from the enrichment workflow
+// (<id>-enrich) via a Temporal workflow query. no pending review (or no enrichment
+// workflow at all) yields {"pending": false}, never an error - the console simply
+// shows nothing to review.
+func (s *server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	val, err := s.tc.QueryWorkflow(ctx, id+"-enrich", "", reviewQueryName)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"submission_id": id, "pending": false})
+		return
+	}
+	var req reviewRequest
+	if err := val.Get(&req); err != nil || req.Question == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"submission_id": id, "pending": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"submission_id": id, "pending": true, "review": req})
+}
+
+// handleReviewPost relays the analyst's decision to the enrichment workflow via a
+// Temporal signal. the decision is a gold label: on approval the workflow curates
+// the analysis facts. 404 when there is no pending review (no such workflow, or it
+// has already closed).
+func (s *server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var dec reviewDecision
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&dec); err != nil {
+		http.Error(w, "malformed decision", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := s.tc.SignalWorkflow(ctx, id+"-enrich", "", reviewSignalName, dec); err != nil {
+		http.Error(w, "no pending review for this submission", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"submission_id": id, "recorded": true})
+}
+
 func main() {
 	vault := envOr("MAL_VAULT_DIR", filepath.Join(os.TempDir(), "openmallab-vault"))
 	if err := os.MkdirAll(vault, 0o700); err != nil {
@@ -306,6 +367,8 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("POST /v1/submissions", s.handleSubmit)
 	mux.HandleFunc("GET /v1/submissions/{id}", s.handleGet)
+	mux.HandleFunc("GET /v1/submissions/{id}/review", s.handleReviewGet)
+	mux.HandleFunc("POST /v1/submissions/{id}/review", s.handleReviewPost)
 	mux.HandleFunc("GET /v1/queue", s.handleQueue)
 
 	addr := envOr("MAL_GATEWAY_ADDR", ":8080")

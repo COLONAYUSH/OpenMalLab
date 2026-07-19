@@ -185,6 +185,21 @@
   .detail::-webkit-scrollbar { width: 11px; } .detail::-webkit-scrollbar-thumb { background: var(--hairline); border-radius: 7px; border: 3px solid transparent; background-clip: padding-box; }
   .detail-inner { max-width: 940px; margin: 0 auto; padding: 30px 34px 90px; }
   .detail-inner.enter { animation: fadeUp .4s cubic-bezier(.2, .8, .2, 1) both; }
+  /* ---- human review (HITL) ---- */
+  .review-tag { margin-left: 10px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--sus); border: 1px solid var(--sus); border-radius: 999px; padding: 2px 9px; vertical-align: middle; }
+  .review-panel { border: 1px solid var(--sus); border-radius: 12px; padding: 16px 20px; margin: 24px 0 6px; background: var(--sus-bg); }
+  .review-head { font-weight: 650; color: var(--sus); letter-spacing: .05em; text-transform: uppercase; font-size: 11.5px; margin-bottom: 10px; }
+  .review-q { font-size: 14px; color: var(--text); line-height: 1.5; margin-bottom: 10px; }
+  .review-kinds { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .review-chip { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--hairline); color: var(--text-2); }
+  .review-reason { font-size: 12.5px; color: var(--text-2); line-height: 1.45; margin: 3px 0; }
+  .review-note { width: 100%; box-sizing: border-box; margin: 12px 0; min-height: 52px; background: var(--surface); color: var(--text); border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 8px 10px; font: inherit; font-size: 13px; resize: vertical; }
+  .review-actions { display: flex; gap: 10px; }
+  .review-btn { cursor: pointer; border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 8px 16px; font: inherit; font-size: 13px; font-weight: 600; color: var(--text); background: var(--surface-2); transition: transform .12s; }
+  .review-btn:hover { transform: translateY(-1px); }
+  .review-btn.approve { background: var(--ben); color: #06231a; border-color: transparent; }
+  .review-done { color: var(--ben); font-size: 13px; font-weight: 600; }
+  .review-err { color: var(--sus); font-size: 13px; }
   .back-btn { display: none; margin-bottom: 16px; }
   @media (max-width: 900px) { .back-btn { display: inline-flex; } }
 
@@ -422,6 +437,7 @@
     var hv = el("div", "hero-verdict");
     hv.appendChild(el("div", "big m-" + VCLASS[d.verdict], d.verdict));
     if (d.incomplete) hv.appendChild(el("span", "incomplete-tag", "incomplete"));
+    if (d.needs_review) hv.appendChild(el("span", "review-tag", "needs review"));
     info.appendChild(hv);
     var sub = el("div", "hero-sub"); info.appendChild(sub);
     var ft = el("div"); ft.appendChild(el("span", "k", "file type")); ft.appendChild(el("span", "v", d.file_type ? defang(d.file_type) : "unidentified")); sub.appendChild(ft);
@@ -432,10 +448,62 @@
     shv.addEventListener("click", function () { copy(d.sha256, shv); }); sh.appendChild(shv); sub.appendChild(sh);
     hero.appendChild(info); inner.appendChild(hero);
 
+    if (d.needs_review || d.review) renderReview(inner, d);
+
     inner.appendChild(el("div", "sectlabel", "Evidence"));
     (d.tree || []).forEach(function (node, idx) { inner.appendChild(artifactCard(node, idx === 0)); });
     inner.appendChild(footnote());
     main.appendChild(inner);
+  }
+
+  /* The one WRITE action in the console: an analyst resolves an AI escalation. The
+     review task (question + escalated kinds + reasons) is model/spine-derived text,
+     so it is defanged and inert-rendered like all specimen data. The decision is a
+     gold label - on approval the workflow curates the analysis facts. */
+  function renderReview(inner, d) {
+    var panel = el("div", "review-panel");
+    panel.appendChild(el("div", "review-head", "Human review requested"));
+    var body = el("div", "review-body", "Checking for a pending review task...");
+    panel.appendChild(body); inner.appendChild(panel);
+
+    var fill = function (rv) {
+      body.textContent = "";
+      body.appendChild(el("div", "review-q", defang(rv.question || "Review the AI-escalated findings for this submission.")));
+      if (rv.kinds && rv.kinds.length) {
+        var kl = el("div", "review-kinds");
+        rv.kinds.forEach(function (k) { kl.appendChild(el("span", "review-chip", defang(k))); });
+        body.appendChild(kl);
+      }
+      (rv.reasons || []).forEach(function (r) { body.appendChild(el("div", "review-reason", defang(r))); });
+      var note = el("textarea", "review-note"); note.setAttribute("placeholder", "optional note (recorded as a gold label)"); note.setAttribute("maxlength", "2000");
+      body.appendChild(note);
+      var actions = el("div", "review-actions");
+      var approve = el("button", "review-btn approve", "Approve + curate");
+      var reject = el("button", "review-btn reject", "Reject");
+      approve.addEventListener("click", function () { submitReview(d.submission_id, true, note.value, body); });
+      reject.addEventListener("click", function () { submitReview(d.submission_id, false, note.value, body); });
+      actions.appendChild(approve); actions.appendChild(reject); body.appendChild(actions);
+    };
+
+    if (d.review) { fill(d.review); return; } // embedded (preview) task
+    fetch("/v1/submissions/" + encodeURIComponent(d.submission_id) + "/review", { headers: { accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j && j.pending && j.review) fill(j.review); else panel.remove(); })
+      .catch(function () { panel.remove(); });
+  }
+
+  function submitReview(id, approved, note, body) {
+    body.textContent = "Recording decision...";
+    fetch("/v1/submissions/" + encodeURIComponent(id) + "/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ approved: approved, note: String(note || "").slice(0, 2000) })
+    }).then(function (r) {
+      body.textContent = "";
+      if (r.ok) body.appendChild(el("div", "review-done", approved ? "Decision recorded: approved. The analysis facts will be curated." : "Decision recorded: rejected."));
+      else body.appendChild(el("div", "review-err", "Could not record the decision (no pending review, or no live gateway)."));
+    }).catch(function () {
+      body.textContent = ""; body.appendChild(el("div", "review-err", "Could not reach the gateway (preview mode)."));
+    });
   }
 
   function countUp(node, target) {
@@ -549,7 +617,7 @@
     (api.findings || []).forEach(function (f) { var p = f.path || ""; (byPath[p] = byPath[p] || { path: p, findings: [] }).findings.push(f); });
     var tree = Object.keys(byPath).sort(function (a, b) { return a.length - b.length; }).map(function (p) { return byPath[p]; });
     if (tree[0]) { tree[0].sha256 = api.sha256; tree[0].file_type = api.file_type; }
-    return { submission_id: api.submission_id, sha256: api.sha256, file_type: api.file_type, verdict: api.verdict, score: api.score, confidence: api.confidence, incomplete: api.incomplete, tree: tree };
+    return { submission_id: api.submission_id, sha256: api.sha256, file_type: api.file_type, verdict: api.verdict, score: api.score, confidence: api.confidence, incomplete: api.incomplete, needs_review: !!api.needs_review, enriched: !!api.enriched, tree: tree };
   }
   function showPreviewBanner() {
     var b = document.createElement("div"); b.className = "preview-banner";
@@ -572,8 +640,8 @@
         { path: "", sha256: "c4d5e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a80912", file_type: "php", findings: [ F("mal-ident", "file-type", "php", "UNKNOWN", "LOW"), F("mal-static-yara", "yara", "webshell_php_eval_superglobal", "MALICIOUS", "HIGH", "T1505.003") ] } ] },
       "sub-2b31": { submission_id: "sub-2b31", name: "update.ps1", sha256: "d5e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091234", file_type: "powershell", verdict: "MALICIOUS", score: 95, confidence: "HIGH", incomplete: false, tree: [
         { path: "", sha256: "d5e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091234", file_type: "powershell", findings: [ F("mal-ident", "file-type", "powershell", "UNKNOWN", "LOW"), F("mal-static-yara", "yara", "powershell_download_cradle", "MALICIOUS", "HIGH", "T1059.001") ] } ] },
-      "sub-6d02": { submission_id: "sub-6d02", name: "svchost_update.exe", sha256: "e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a809123456", file_type: "pe", verdict: "SUSPICIOUS", score: 62, confidence: "MEDIUM", incomplete: false, tree: [
-        { path: "", sha256: "e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a809123456", file_type: "pe", findings: [ F("mal-ident", "file-type", "pe", "UNKNOWN", "LOW"), F("mal-static-yara", "yara", "packer_upx", "SUSPICIOUS", "HIGH", "T1027.002"), F("mal-capa", "capa-summary", "capa matched 9 capabilities", "UNKNOWN", "LOW"), F("mal-capa", "capability", "host-interaction/process/inject: inject APC into a process", "SUSPICIOUS", "MEDIUM", "T1055.004"), F("mal-capa", "capability", "anti-analysis/anti-debugging: check for software breakpoints", "SUSPICIOUS", "MEDIUM", "T1622"), F("mal-capa", "capability", "communication/http: send HTTP request", "UNKNOWN", "LOW", "T1071.001"), F("mal-capa", "capability", "data-manipulation/encryption/rc4: encrypt data using RC4", "UNKNOWN", "LOW", "C0027"), F("mal-capa", "capability", "host-interaction/registry: set registry value", "UNKNOWN", "LOW", "T1112") ] } ] },
+      "sub-6d02": { submission_id: "sub-6d02", name: "svchost_update.exe", sha256: "e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a809123456", file_type: "pe", verdict: "SUSPICIOUS", score: 62, confidence: "MEDIUM", incomplete: false, needs_review: true, enriched: true, review: { question: "The AI escalated a process-injection + HTTP C2 hypothesis for this packed PE. Confirm the assessment?", kinds: ["technique", "family"], reasons: ["one or more hypotheses require human review", "family attribution is high-stakes and always escalates"] }, tree: [
+        { path: "", sha256: "e6f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a809123456", file_type: "pe", findings: [ F("mal-ident", "file-type", "pe", "UNKNOWN", "LOW"), F("mal-static-yara", "yara", "packer_upx", "SUSPICIOUS", "HIGH", "T1027.002"), F("mal-capa", "capa-summary", "capa matched 9 capabilities", "UNKNOWN", "LOW"), F("mal-capa", "capability", "host-interaction/process/inject: inject APC into a process", "SUSPICIOUS", "MEDIUM", "T1055.004"), F("mal-capa", "capability", "anti-analysis/anti-debugging: check for software breakpoints", "SUSPICIOUS", "MEDIUM", "T1622"), F("mal-capa", "capability", "communication/http: send HTTP request", "UNKNOWN", "LOW", "T1071.001"), F("mal-capa", "capability", "data-manipulation/encryption/rc4: encrypt data using RC4", "UNKNOWN", "LOW", "C0027"), F("mal-capa", "capability", "host-interaction/registry: set registry value", "UNKNOWN", "LOW", "T1112"), F("mal-ai", "enrichment", "AI proposes: process injection (T1055) consistent with a generic HTTP RAT; grounded to a curated technique and escalated for human review", "SUSPICIOUS", "LOW", "T1055") ] } ] },
       "sub-1a77": { submission_id: "sub-1a77", name: "id", sha256: "f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a80912345678", file_type: "elf", verdict: "UNKNOWN", score: 0, confidence: "LOW", incomplete: false, tree: [
         { path: "", sha256: "f70819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a80912345678", file_type: "elf", findings: [ F("mal-ident", "file-type", "elf", "UNKNOWN", "LOW"), F("mal-capa", "capa-summary", "capa matched 7 capabilities", "UNKNOWN", "LOW"), F("mal-capa", "capability", "host-interaction/session: get current user on Linux", "UNKNOWN", "LOW", "T1033"), F("mal-capa", "capability", "host-interaction/os/info: get system information on Linux", "UNKNOWN", "LOW", "T1082"), F("mal-capa", "capability", "host-interaction/process/terminate: terminate process", "UNKNOWN", "LOW", "C0018") ] } ] },
       "sub-8e45": { submission_id: "sub-8e45", name: "archive.tar.gz", sha256: "0819a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091234567890", file_type: "gzip", verdict: "SUSPICIOUS", score: 16, confidence: "LOW", incomplete: true, tree: [
@@ -582,7 +650,7 @@
         { path: "", sha256: "19a2b3c4d5e6f7a8091a2b3c4d5e6f7a8091a2b3c4d5e6f7a809123456789012", file_type: "txt", findings: [ F("mal-ident", "file-type", "txt", "UNKNOWN", "LOW"), F("mal-ident", "file-type-group", "text", "UNKNOWN", "LOW") ] } ] }
     };
     var received = { "sub-9f2a": "2m ago", "sub-7c14": "6m ago", "sub-4e88": "11m ago", "sub-2b31": "18m ago", "sub-6d02": "24m ago", "sub-1a77": "31m ago", "sub-8e45": "40m ago", "sub-3f90": "52m ago" };
-    var queue = Object.keys(details).map(function (id) { var d = details[id]; return { submission_id: id, name: d.name, file_type: d.file_type, verdict: d.verdict, score: d.score, confidence: d.confidence, incomplete: d.incomplete, received: received[id] }; });
+    var queue = Object.keys(details).map(function (id) { var d = details[id]; return { submission_id: id, name: d.name, file_type: d.file_type, verdict: d.verdict, score: d.score, confidence: d.confidence, incomplete: d.incomplete, needs_review: d.needs_review, received: received[id] }; });
     return { queue: queue, details: details };
   })();
 
