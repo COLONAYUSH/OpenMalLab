@@ -86,6 +86,25 @@ platform runs deterministic-only. This is the air-gapped default.
   interface (L0/L0.5/L1). Must implement `Merge` as a serializable upsert so the
   poisoning guard stays atomic (see `internal/knowledge`).
 
+## Human-in-the-loop seam (design sec 07)
+
+When the gate escalates, `AgentGraphWorkflow` raises a review task and durably
+awaits the analyst. Two touch-points wire the console to it:
+
+- **Read the pending task**: the workflow answers the `pending-review` query with a
+  `ReviewRequest` (submission id, question, escalated kinds + reasons). The console
+  lists escalated submissions and queries each for its task
+  (`temporalClient.QueryWorkflow(ctx, workflowID, "pending-review")`).
+- **Deliver the decision**: the analyst approves/rejects; the gateway signals the
+  workflow (`temporalClient.SignalWorkflow(ctx, workflowID, "", "review-decision",
+  ReviewDecision{Approved: ...})`). On approval the workflow curates the analysis
+  facts as a gold label; either way the deterministic verdict already stands, and
+  the workflow waits at most `reviewTimeout` (7 days) before proceeding on its own.
+
+The workflow mechanism (query + signal + timeout + gold-label curation) is built
+and tested; the console list/decide UI is a thin mal-web + gateway addition over
+these two Temporal calls.
+
 ## What must remain true (verified by the eval corpus)
 
 `aiplane.Corpus()` is the standing regression gate. Any change here must keep it

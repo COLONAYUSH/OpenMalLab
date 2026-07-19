@@ -34,6 +34,7 @@ func runGraph(t *testing.T, a *Analyzer, in pipeline.SubmissionResult) pipeline.
 	env := ts.NewTestWorkflowEnvironment()
 	env.RegisterActivity(a.RunRosterActivity)
 	env.RegisterActivity(a.GateActivity)
+	env.RegisterActivity(a.IngestLearningActivity)
 	env.ExecuteWorkflow(AgentGraphWorkflow, in)
 	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
 		t.Fatalf("workflow did not complete cleanly: %v", env.GetWorkflowError())

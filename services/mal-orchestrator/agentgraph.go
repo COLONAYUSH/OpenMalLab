@@ -171,8 +171,10 @@ type GateInput struct {
 }
 
 type GateOutcome struct {
-	Findings    []pipeline.Finding
-	NeedsReview bool
+	Findings       []pipeline.Finding
+	NeedsReview    bool
+	EscalatedKinds []string // categories the gate sent to a human (for the HITL task)
+	Reasons        []string
 }
 
 // RunRosterActivity orchestrates the untrusted roster and assembles a proposal.
@@ -301,9 +303,13 @@ func (a *Analyzer) GateActivity(ctx context.Context, in GateInput) (GateOutcome,
 	gr := a.gate.EvaluateWithSignals(ev, prop, in.Signals)
 	h.Outcome = "gated"
 	h.NeedsHuman = gr.NeedsHuman
+	var escalated []string
 	for _, gh := range gr.Hypotheses {
-		if gh.Disposition == aiplane.DispAccept {
+		switch gh.Disposition {
+		case aiplane.DispAccept:
 			h.Accepted++
+		case aiplane.DispEscalate:
+			escalated = append(escalated, gh.Kind)
 		}
 		h.CitedFactIDs = append(h.CitedFactIDs, gh.VerifiedCitationIDs...)
 	}
@@ -311,7 +317,7 @@ func (a *Analyzer) GateActivity(ctx context.Context, in GateInput) (GateOutcome,
 		h.RetrievalTiers = []string{"L0"}
 	}
 	a.ledgerAppend(h)
-	return GateOutcome{Findings: gr.EnrichmentFindings(), NeedsReview: gr.NeedsHuman}, nil
+	return GateOutcome{Findings: gr.EnrichmentFindings(), NeedsReview: gr.NeedsHuman, EscalatedKinds: escalated, Reasons: gr.Reasons}, nil
 }
 
 // AgentGraphWorkflow is the async, post-verdict multi-agent enrichment. it drives
@@ -343,9 +349,34 @@ func AgentGraphWorkflow(ctx workflow.Context, res pipeline.SubmissionResult) (pi
 	}
 	if gate.NeedsReview {
 		res.NeedsReview = true
+		// raise the HITL task, expose it to the console via query, and durably await
+		// the analyst's decision signal or a long timeout. the deterministic verdict
+		// (and the capped enrichment) stand either way; the human resolves the
+		// escalation and, on approval, promotes the analysis facts to curated.
+		review := ReviewRequest{
+			SubmissionID: res.SubmissionID,
+			Question:     "Review the AI-escalated findings for this submission.",
+			Kinds:        gate.EscalatedKinds,
+			Reasons:      gate.Reasons,
+		}
+		_ = workflow.SetQueryHandler(ctx, reviewQueryName, func() (ReviewRequest, error) { return review, nil })
+
+		var decision ReviewDecision
+		got := false
+		sel := workflow.NewSelector(ctx)
+		sel.AddReceive(workflow.GetSignalChannel(ctx, reviewSignalName), func(c workflow.ReceiveChannel, _ bool) {
+			c.Receive(ctx, &decision)
+			got = true
+		})
+		sel.AddFuture(workflow.NewTimer(ctx, reviewTimeout), func(workflow.Future) {})
+		sel.Select(ctx)
+
+		if got && decision.Approved {
+			// human gold label: promote the analysis facts to curated memory.
+			_ = workflow.ExecuteActivity(ctx, a.IngestLearningActivity, LearnInput{Result: res, Confirmed: true}).Get(ctx, nil)
+		}
 	}
-	// tier-1 learning: record the finalized analysis to the low-trust working index
-	// (best effort; a learning-write failure never affects the verdict).
+	// tier-1 working-index ingest (always; a no-op on any fact already curated).
 	_ = workflow.ExecuteActivity(ctx, a.IngestLearningActivity, LearnInput{Result: res, Confirmed: false}).Get(ctx, nil)
 	return res, nil
 }
