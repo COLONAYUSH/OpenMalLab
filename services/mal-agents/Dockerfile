@@ -31,6 +31,12 @@ RUN --mount=type=secret,id=pip_conf,target=/etc/pip.conf,required=false \
 FROM python:3.12-slim-bookworm
 # a non-root, home-less service account; the plane is network-isolated in compose.
 RUN useradd --system --no-create-home --uid 65533 malagent
+# optional corporate TLS CA at runtime too: the GUARDED CLOUD path (compose.cloud.yaml)
+# makes egress HTTPS from this container, so behind a proxy it must trust the corp CA
+# (provider.py routes verification through the OS trust store). empty on a clean
+# network -> no-op; the sovereign local path makes no egress and needs none.
+COPY deploy/certs/ /tmp/extra-certs/
+RUN cat /tmp/extra-certs/*.pem >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true
 COPY --from=build /opt/venv /opt/venv
 COPY services/mal-agents/malagents /opt/malagents/malagents
 ENV PATH=/opt/venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
