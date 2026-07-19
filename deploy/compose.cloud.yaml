@@ -1,0 +1,24 @@
+# Guarded CLOUD model override. Use ALONGSIDE the AI overlay to route the roster at
+# a remote OpenAI-compatible model instead of the local sovereign ollama:
+#
+#   MAL_MODEL_URL=https://your-endpoint MAL_MODEL_NAME=<model> MAL_MODEL_KEY=<key> \
+#   MAL_ALLOW_CLOUD=1 docker compose \
+#     -f deploy/compose.yaml -f deploy/compose.ai.yaml -f deploy/compose.cloud.yaml up
+#
+# It gives mal-agents egress (the sovereign overlay keeps it on a no-egress net) and
+# drops the local ollama server + the wait-for-ollama dependency. NOTE: this is the
+# deliberate egress trade-off - mal-agents can now reach the network. Evidence is
+# still minimized before it leaves the box (provider.py egress gate: hash + paths
+# dropped), and a public host is refused unless MAL_ALLOW_CLOUD=1.
+services:
+  # the local model server is not part of the cloud path: park it behind an
+  # inactive profile so `up` never starts it.
+  ollama:
+    profiles: ["donotstart"]
+
+  mal-agents:
+    # no local ollama to wait for on this path.
+    depends_on: !reset null
+    # add the egress-capable default network (to reach the remote model) while
+    # staying on aiplane so the orchestrator can still call the roster.
+    networks: [aiplane, default]
