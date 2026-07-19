@@ -12,7 +12,9 @@ func TestSeedStarterPopulates(t *testing.T) {
 	if skipped != 0 {
 		t.Fatalf("the bundled starter corpus must be clean, %d skipped", skipped)
 	}
-	if curated < 50 || store.Len() != curated {
+	// the v2 corpus is a credible starter set (~208 facts: ATT&CK tactics +
+	// techniques + sub-techniques, common families incl. C2 frameworks, packers).
+	if curated < 200 || store.Len() != curated {
 		t.Fatalf("starter corpus too small or count mismatch: curated=%d len=%d", curated, store.Len())
 	}
 	// a seeded ATT&CK technique is curated authority: a citation to it verifies.
@@ -26,6 +28,27 @@ func TestSeedStarterPopulates(t *testing.T) {
 	// a normalized family key resolves too.
 	if _, ok := r.Lookup(KindFamily, "Emotet"); !ok {
 		t.Fatal("family lookup should be case-normalized (Emotet -> emotet)")
+	}
+	// specific known keys the corpus now carries resolve as curated authority: a
+	// sub-technique (dotted key), common families (incl. a C2 framework), a packer.
+	for _, want := range []struct {
+		kind Kind
+		key  string
+	}{
+		{KindAttck, "T1055.012"}, // Process Hollowing
+		{KindAttck, "T1486"},     // Data Encrypted for Impact
+		{KindAttck, "T1518"},     // Software Discovery
+		{KindFamily, "LockBit"},  // case-normalized to lockbit
+		{KindFamily, "sliver"},   // a C2 framework tracked as a family
+		{KindPacker, "ConfuserEx"},
+	} {
+		g, ok := r.Lookup(want.kind, want.key)
+		if !ok || g.Trust != TrustCurated {
+			t.Fatalf("seeded key not curated: kind=%s key=%q ok=%v fact=%+v", want.kind, want.key, ok, g)
+		}
+		if !r.VerifyCitation(g.ID, want.kind, want.key).OKForVerdict() {
+			t.Fatalf("citation to seeded %s:%s must be verdict-usable", want.kind, want.key)
+		}
 	}
 }
 
