@@ -134,12 +134,15 @@ func main() {
 			log.Fatalf("seed L0: %v", err)
 		}
 		a.agents = newHTTPAgentCaller(au)
-		a.gate = aiplane.NewGate(reg)
 		a.registry = reg // spine-side retrieval + citation source of truth
 		a.agentLedger = aiplane.NewLedger()
 		a.graph = knowledge.NewGraph(knowledge.NewMemGraph()) // tier-1 learning target (in-memory until a persistent store lands, ASK STORE-1)
-		a.grad = aiplane.NewGraduation()                      // fed by HITL outcomes (sec 14)
+		a.grad = aiplane.NewGraduation()                      // fed by HITL outcomes (sec 14); built BEFORE the gate so it can govern autonomy
 		a.calibration = aiplane.NewCalibration()              // downgrades mis-calibrated confidence (sec 06/11)
+		// the gate consults graduation: a category auto-accepts only once it has EARNED
+		// autonomy through the HITL loop. until then a grounded accept escalates instead,
+		// so the track record actually gates autonomy (never a day-one auto-accept).
+		a.gate = aiplane.NewGateWithGraduation(reg, a.grad)
 		log.Printf("AI agent-graph enabled (roster=%s, L0 seeded with %d facts); enrichment is async and caged", au, n)
 	}
 

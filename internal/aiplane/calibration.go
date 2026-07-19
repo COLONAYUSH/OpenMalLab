@@ -47,35 +47,38 @@ func (c *Calibration) Record(category, conf string, correct bool) {
 	}
 }
 
-// Calibrated returns the confidence to USE for a claim, downgraded when the
-// category's track record at that level is below its floor. it never upgrades;
-// with too few observations it returns the claim unchanged (the gate still
-// requires grounding, so an un-calibrated claim is not thereby trusted).
+// Calibrated returns a DOWNGRADED confidence ONLY when the category's track record
+// at the claimed level is below its floor; otherwise it returns "" - meaning "no
+// calibration override". this distinction is load-bearing: the gate treats a
+// non-empty calibrated confidence of LOW as a stop signal, so echoing an already-
+// LOW (or reliable) claim as its own value would wrongly block it. an honest LOW,
+// or a claim the record supports, yields "" and does not stop the gate. it never
+// upgrades; with too few observations it returns "" (no data, no override).
 func (c *Calibration) Calibrated(category, claimed string) string {
 	claimed = normConfidence(claimed)
 	if claimed == "LOW" {
-		return "LOW"
+		return "" // nothing is below LOW; an honest LOW is never a calibration downgrade
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	k := calKey(category, claimed)
 	total := c.total[k]
 	if total < calMinObservations {
-		return claimed
+		return "" // no track record yet -> no override
 	}
 	acc := float64(c.correct[k]) / float64(total)
 	switch claimed {
 	case "HIGH":
+		if acc < calMedFloor {
+			return "LOW" // very unreliable HIGH -> two-step downgrade
+		}
 		if acc < calHighFloor {
-			if acc < calMedFloor {
-				return "LOW"
-			}
-			return "MEDIUM"
+			return "MEDIUM" // marginal HIGH -> one-step downgrade
 		}
 	case "MEDIUM":
 		if acc < calMedFloor {
 			return "LOW"
 		}
 	}
-	return claimed
+	return "" // reliable at the claimed level -> no override
 }

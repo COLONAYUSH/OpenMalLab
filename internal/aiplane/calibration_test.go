@@ -29,29 +29,32 @@ func TestCalibrationKeepsReliableHigh(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		c.Record("technique", "HIGH", i%20 != 0) // 19/20 = 0.95, above the floor
 	}
-	if got := c.Calibrated("technique", "HIGH"); got != "HIGH" {
-		t.Fatalf("a reliable HIGH must stand, got %s", got)
+	// reliable -> no downgrade -> "" (no override), NOT a blocking value.
+	if got := c.Calibrated("technique", "HIGH"); got != "" {
+		t.Fatalf("a reliable HIGH needs no override, got %q", got)
 	}
 }
 
 func TestCalibrationNeverUpgrades(t *testing.T) {
 	c := NewCalibration()
-	// even a perfect MEDIUM track record must never become HIGH.
+	// even a perfect MEDIUM track record must never become HIGH; it yields no
+	// override ("") - calibration only ever downgrades.
 	for i := 0; i < 20; i++ {
 		c.Record("technique", "MEDIUM", true)
 	}
-	if got := c.Calibrated("technique", "MEDIUM"); got != "MEDIUM" {
-		t.Fatalf("calibration must never upgrade, got %s", got)
+	if got := c.Calibrated("technique", "MEDIUM"); got != "" {
+		t.Fatalf("a reliable MEDIUM needs no override (never an upgrade), got %q", got)
 	}
-	if got := c.Calibrated("technique", "LOW"); got != "LOW" {
-		t.Fatalf("LOW stays LOW, got %s", got)
+	// an honest LOW is never a calibration downgrade (and must not become a stop).
+	if got := c.Calibrated("technique", "LOW"); got != "" {
+		t.Fatalf("an honest LOW must yield no override, got %q", got)
 	}
 }
 
 func TestCalibrationInsufficientDataLeavesClaimAlone(t *testing.T) {
 	c := NewCalibration()
 	c.Record("family", "HIGH", false) // one bad observation is not enough to act
-	if got := c.Calibrated("family", "HIGH"); got != "HIGH" {
-		t.Fatalf("too few observations must leave the claim unchanged, got %s", got)
+	if got := c.Calibrated("family", "HIGH"); got != "" {
+		t.Fatalf("too few observations must yield no override, got %q", got)
 	}
 }

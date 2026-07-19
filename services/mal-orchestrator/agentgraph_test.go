@@ -29,6 +29,23 @@ func seededGate(t *testing.T) (*aiplane.Gate, string) {
 	return aiplane.NewGate(reg), f.ID
 }
 
+// graduatedGate is a seeded gate wired to graduation with `category` already
+// EARNED autonomous, so a grounded accept folds through the real production path
+// (NewGateWithGraduation) rather than the day-one auto-accept of a bare gate.
+func graduatedGate(t *testing.T, category string) (*aiplane.Gate, string) {
+	t.Helper()
+	reg := knowledge.NewRegistry(knowledge.NewMemStore())
+	f, err := reg.Curate(knowledge.KindAttck, "T1055", "Process Injection", nil, "seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grad := aiplane.NewGraduation()
+	for i := 0; i < 20; i++ {
+		grad.Record(category, true) // clean track record -> earned autonomous
+	}
+	return aiplane.NewGateWithGraduation(reg, grad), f.ID
+}
+
 func runGraph(t *testing.T, a *Analyzer, in pipeline.SubmissionResult) pipeline.SubmissionResult {
 	t.Helper()
 	var ts testsuite.WorkflowTestSuite
@@ -49,7 +66,10 @@ func runGraph(t *testing.T, a *Analyzer, in pipeline.SubmissionResult) pipeline.
 }
 
 func TestAgentGraphFoldsAcceptedEnrichment(t *testing.T) {
-	gate, factID := seededGate(t)
+	// production wires the gate to graduation, so a fold is EARNED: the "technique"
+	// category is graduated to autonomous first, then a grounded+verified hypothesis
+	// folds through the real production accept path (not a day-one auto-accept).
+	gate, factID := graduatedGate(t, "technique")
 	// router -> capability_reasoner (technique citing the curated T1055) -> verifier real.
 	resp := map[string][]byte{
 		"router":              []byte(`{"agents":["capability_reasoner","verifier"]}`),
@@ -60,7 +80,7 @@ func TestAgentGraphFoldsAcceptedEnrichment(t *testing.T) {
 
 	out := runGraph(t, a, pipeline.SubmissionResult{SubmissionID: "s", Verdict: pipeline.Unknown})
 	if out.Verdict != pipeline.Suspicious {
-		t.Fatalf("grounded+verified enrichment must raise the verdict to SUSPICIOUS, got %v", out.Verdict)
+		t.Fatalf("grounded+verified enrichment in an earned category must raise the verdict to SUSPICIOUS, got %v", out.Verdict)
 	}
 	found := false
 	for _, f := range out.Findings {
@@ -70,6 +90,38 @@ func TestAgentGraphFoldsAcceptedEnrichment(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected a capped mal-ai enrichment finding: %+v", out.Findings)
+	}
+}
+
+func TestAgentGraphFreshCategoryEscalatesNotFolds(t *testing.T) {
+	// the production bootstrap: a FRESH category is supervised, so even a grounded,
+	// verifier-confirmed hypothesis is NOT auto-folded - it escalates to a human and
+	// the verdict does not move. this is exactly the day-one behavior finding HIGH #1
+	// was about (the autonomous fold must be EARNED via the HITL loop, never free).
+	reg := knowledge.NewRegistry(knowledge.NewMemStore())
+	f, err := reg.Curate(knowledge.KindAttck, "T1055", "Process Injection", nil, "seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := aiplane.NewGateWithGraduation(reg, aiplane.NewGraduation()) // fresh -> supervised
+	resp := map[string][]byte{
+		"router":              []byte(`{"agents":["capability_reasoner","verifier"]}`),
+		"capability_reasoner": []byte(`{"behaviors":[{"ttp":"T1055","why":"injects into a remote process","citations":[{"fact_id":"` + f.ID + `","kind":"attck","key":"T1055"}]}]}`),
+		"verifier":            []byte(`{"real":true,"reason":"evidence supports it"}`),
+	}
+	a := &Analyzer{agents: mockCaller{resp: resp}, gate: gate, agentLedger: aiplane.NewLedger()}
+
+	out := runGraph(t, a, pipeline.SubmissionResult{SubmissionID: "s", Verdict: pipeline.Unknown})
+	for _, fnd := range out.Findings {
+		if fnd.Engine == "mal-ai" {
+			t.Fatalf("a fresh (un-earned) category must not fold enrichment: %+v", fnd)
+		}
+	}
+	if out.Verdict != pipeline.Unknown {
+		t.Fatalf("a supervised hypothesis must not move the deterministic verdict, got %v", out.Verdict)
+	}
+	if !out.NeedsReview {
+		t.Fatal("a grounded hypothesis in a not-yet-earned category must escalate to a human")
 	}
 }
 

@@ -8,14 +8,16 @@ import (
 
 func TestGraduationPromotesWithTrackRecord(t *testing.T) {
 	g := NewGraduation()
-	if g.Mode("technique") != ModeShadow {
-		t.Fatal("a fresh category must start in shadow")
+	// a fresh category is SUPERVISED: it escalates to a human and earns its record
+	// from those decisions (the bootstrap). it is never trusted, but never stranded.
+	if g.Mode("technique") != ModeSupervised {
+		t.Fatalf("a fresh category must start supervised (escalate + earn), got %s", g.Mode("technique"))
 	}
 	for i := 0; i < 5; i++ {
 		g.Record("technique", true)
 	}
 	if g.Mode("technique") != ModeSupervised {
-		t.Fatalf("5 clean observations should reach supervised, got %s", g.Mode("technique"))
+		t.Fatalf("5 clean observations is still supervised (below the autonomy bar), got %s", g.Mode("technique"))
 	}
 	for i := 0; i < 15; i++ {
 		g.Record("technique", true) // total 20, all correct
@@ -60,7 +62,16 @@ func groundedTechnique(t *testing.T) (*knowledge.Registry, Proposal) {
 
 func TestGateShadowDropsEvenGrounded(t *testing.T) {
 	r, p := groundedTechnique(t)
-	grad := NewGraduation() // "technique" is fresh -> shadow
+	grad := NewGraduation()
+	// drive "technique" to proven-noise: enough observations, accuracy below the
+	// shadow floor. shadow is the EARNED-DOWN state (a chronically-wrong category),
+	// so it must be demoted there, not merely fresh.
+	for i := 0; i < 20; i++ {
+		grad.Record("technique", false)
+	}
+	if grad.Mode("technique") != ModeShadow {
+		t.Fatalf("a chronically-wrong category must demote to shadow, got %s", grad.Mode("technique"))
+	}
 	res := NewGateWithGraduation(r, grad).Evaluate(Evidence{}, p)
 	if res.Hypotheses[0].Disposition != DispDrop {
 		t.Fatalf("shadow mode must drop even a grounded hypothesis, got %s", res.Hypotheses[0].Disposition)
