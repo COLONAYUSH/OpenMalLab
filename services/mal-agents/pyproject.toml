@@ -6,10 +6,13 @@ requires-python = ">=3.11"
 
 # lean + auditable by design (mirrors the Go plane's tiny-dependency posture):
 # pydantic-ai-slim is the minimal pydantic-ai without the heavy optional trees,
-# with only the openai-compatible client extra (vLLM speaks that API).
+# with only the openai-compatible client extra (vLLM/Ollama speak that API).
+# pinned to the tested 2.x major: an unbounded floor let it drift across a major
+# version (which renamed OpenAIModel), silently breaking the cloud model path that
+# only the live run exercises. keep the upper bound until a newer major is tested.
 dependencies = [
     "pydantic>=2.7",
-    "pydantic-ai-slim[openai]>=0.0.36",
+    "pydantic-ai-slim[openai]>=2.0,<3.0",
     "fastapi>=0.110",
     "uvicorn>=0.29",
 ]

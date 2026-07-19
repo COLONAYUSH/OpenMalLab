@@ -43,9 +43,20 @@ class Priors(BaseModel):
 class Behavior(BaseModel):
     """One behavior narrative grounded in capa/ATT&CK evidence + priors."""
 
-    ttp: str = ""
-    why: str = ""
-    citations: list[Citation] = Field(default_factory=list)
+    ttp: str = Field(
+        default="",
+        description="the ATT&CK technique id this behavior maps to, e.g. 'T1055'. "
+        "Copy it verbatim from the evidence's attck field; never invent one.",
+    )
+    why: str = Field(
+        default="",
+        description="a one-line explanation of the behavior, grounded in the evidence.",
+    )
+    citations: list[Citation] = Field(
+        default_factory=list,
+        description="facts this behavior rests on. Include a citation ONLY when a "
+        "prior gives you a real fact_id; otherwise leave this empty.",
+    )
 
 
 class Behaviors(BaseModel):

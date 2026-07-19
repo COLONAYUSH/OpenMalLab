@@ -15,16 +15,23 @@ from pydantic import BaseModel, Field
 from .agents.analyst import analyze
 from .agents.roster import ROSTER, run_agent
 from .agents.schemas import Priors
+from .egress import minimize_for_egress
 from .models import Evidence, Proposal
-from .provider import model_configured
+from .provider import cloud_enabled, model_configured
 
 app = FastAPI(title="OpenMalLab agent plane", version="0.1.0")
+
+
+def _for_model(ev: Evidence) -> Evidence:
+    """Minimize evidence before it reaches the model IFF the cloud path is opted
+    into; the local (sovereign) path gets the full projection unchanged."""
+    return minimize_for_egress(ev) if cloud_enabled() else ev
 
 
 @app.get("/healthz")
 def healthz() -> dict:
     """Liveness + whether a live model is configured (else the test model is used)."""
-    return {"ok": True, "model_configured": model_configured()}
+    return {"ok": True, "model_configured": model_configured(), "cloud_egress": cloud_enabled()}
 
 
 @app.get("/v1/roster")
@@ -36,7 +43,7 @@ def v1_roster() -> dict:
 @app.post("/v1/analyze", response_model=Proposal)
 async def v1_analyze(evidence: Evidence) -> Proposal:
     """Run the analyst agent over one submission's evidence and return a proposal."""
-    return await analyze(evidence)
+    return await analyze(_for_model(evidence))
 
 
 class AgentRequest(BaseModel):
@@ -58,7 +65,7 @@ async def v1_agent(name: str, req: AgentRequest):
         raise HTTPException(status_code=404, detail="unknown agent")
     return await run_agent(
         name,
-        req.evidence,
+        _for_model(req.evidence),
         priors=req.priors,
         claim=req.claim,
         reason=req.reason,

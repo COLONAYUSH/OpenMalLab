@@ -14,7 +14,7 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from ..models import Evidence
-from ..provider import get_model
+from .factory import make_agent
 from .schemas import Priors
 
 SYSTEM_PROMPT = (
@@ -43,7 +43,7 @@ SYSTEM_PROMPT = (
 
 def build_correlator() -> Agent[None, Priors]:
     """Construct the correlator agent over the configured model (test model offline)."""
-    return Agent(get_model(), output_type=Priors, system_prompt=SYSTEM_PROMPT)
+    return make_agent(Priors, SYSTEM_PROMPT)
 
 
 def evidence_prompt(ev: Evidence) -> str:

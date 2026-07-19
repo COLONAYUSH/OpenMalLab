@@ -14,7 +14,7 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from ..models import Evidence
-from ..provider import get_model
+from .factory import make_agent
 from .schemas import Verdict
 
 SYSTEM_PROMPT = (
@@ -44,7 +44,7 @@ SYSTEM_PROMPT = (
 
 def build_verifier() -> Agent[None, Verdict]:
     """Construct the verifier agent over the configured model (test model offline)."""
-    return Agent(get_model(), output_type=Verdict, system_prompt=SYSTEM_PROMPT)
+    return make_agent(Verdict, SYSTEM_PROMPT)
 
 
 def verify_prompt(ev: Evidence, claim: str) -> str:

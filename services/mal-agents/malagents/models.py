@@ -67,9 +67,12 @@ class Citation(BaseModel):
     fields are passed BYTE-FOR-BYTE (never mutated) so a real curated key resolves.
     """
 
-    fact_id: str
-    kind: str
-    key: str
+    fact_id: str = Field(
+        description="the fact_id of a known fact, taken VERBATIM from a prior; never "
+        "invent one. If you have no real fact_id, do not emit a citation at all."
+    )
+    kind: str = Field(description="the fact's kind, e.g. 'attck' or 'family'.")
+    key: str = Field(description="the fact's key, e.g. the technique id 'T1055'.")
 
 
 class Hypothesis(BaseModel):
