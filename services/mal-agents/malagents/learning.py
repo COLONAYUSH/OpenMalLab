@@ -35,12 +35,15 @@ class Example:
 @dataclass
 class Version:
     """A prompt (tier 2) or model (tier 3) version. score is its holdout score at
-    promotion time; approved is the human release sign-off."""
+    promotion time; approved is the human release sign-off. artifact is the gradeable
+    thing (the prompt text / model handle), RETAINED so the incumbent can be
+    re-scored on a later holdout rather than trusting its stale promotion-time score."""
 
     id: str
     kind: str  # "prompt" | "model"
     score: float = 0.0
     approved: bool = False
+    artifact: object = None
 
 
 # a Scorer grades a candidate artifact against the holdout, returning [0,1] accuracy.
@@ -95,8 +98,18 @@ def run_learning(registry: Registry, candidate: Version, artifact: object,
     """Run one offline tier-2/3 cycle: gate the produced candidate against the
     registry's incumbent and promote it only if the gate passes. the producer
     (DSPy optimizer or LoRA trainer) has already made `candidate`/`artifact`; this
-    is the release control. returns (promoted?, reason)."""
-    ok, reason = gate_promotion(candidate, artifact, holdout, registry.incumbent_score(), scorer)
+    is the release control. returns (promoted?, reason).
+
+    The incumbent is RE-SCORED on the CURRENT holdout before the comparison, not
+    judged by the score it earned at its own promotion time. Holdouts grow and
+    change; comparing a fresh candidate score to a stale incumbent score is apples
+    to oranges and can promote a worse model (or block a better one). Both sides are
+    now graded by the same scorer on the same eval set. The candidate's artifact is
+    retained on its Version so it in turn can be re-scored when it is the incumbent."""
+    candidate.artifact = artifact
+    inc = registry.active
+    incumbent_score = scorer(inc.artifact, holdout) if inc is not None else 0.0
+    ok, reason = gate_promotion(candidate, artifact, holdout, incumbent_score, scorer)
     if ok:
         registry.promote(candidate)
     return ok, reason
