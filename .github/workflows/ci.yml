@@ -46,7 +46,12 @@ jobs:
         working-directory: services/mal-agents
         run: pytest -q
       - name: supply-chain audit
-        run: pip-audit --strict
+        # audit the third-party dependency closure strictly (fail-closed on any
+        # known CVE or un-auditable dep), excluding our own local package, which
+        # is not on PyPI and would otherwise trip --strict.
+        run: |
+          pip freeze | grep -iv '^malagents' > /tmp/reqs.txt
+          pip-audit --strict -r /tmp/reqs.txt
 
   fuzz:
     # continuous fuzzing of the trust boundary. the broker is the one decoder
