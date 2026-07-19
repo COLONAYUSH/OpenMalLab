@@ -31,3 +31,18 @@ def test_analyze_rejects_unknown_fields():
     r = TestClient(app).post("/v1/analyze", json={"submission_id": "s", "not_a_field": 1})
     # FastAPI is lenient about extra fields by default; the point is it must not 500.
     assert r.status_code in (200, 422)
+
+
+def test_roster_endpoint_lists_agents():
+    r = TestClient(app).get("/v1/roster")
+    assert r.status_code == 200
+    assert "router" in r.json()["agents"]
+
+
+def test_agent_endpoint_offline_and_404(monkeypatch):
+    monkeypatch.delenv("MAL_MODEL_URL", raising=False)  # deterministic TestModel
+    c = TestClient(app)
+    ok = c.post("/v1/agent/router", json={"evidence": {"submission_id": "s", "verdict": "UNKNOWN", "items": []}})
+    assert ok.status_code == 200, ok.text
+    missing = c.post("/v1/agent/does-not-exist", json={"evidence": {"submission_id": "s"}})
+    assert missing.status_code == 404
