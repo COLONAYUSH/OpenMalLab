@@ -29,6 +29,25 @@ jobs:
       - name: test
         run: go test ./...
 
+  python-agents:
+    # the AI-analyst plane: install the Pydantic-AI agent service and run its
+    # suite fully offline (Pydantic-AI TestModel - no live model, no network),
+    # then the pip-audit supply-chain gate over its dependency closure. deps come
+    # from public PyPI; corporate and air-gapped forks point pip at their mirror.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: pip install "./services/mal-agents[dev]"
+      - name: test
+        working-directory: services/mal-agents
+        run: pytest -q
+      - name: supply-chain audit
+        run: pip-audit --strict
+
   fuzz:
     # continuous fuzzing of the trust boundary. the broker is the one decoder
     # of hostile-derived bytes; it gets hammered on every push.
