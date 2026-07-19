@@ -427,7 +427,11 @@ func plannedSet(names []string) map[string]bool {
 func cleanCites(cs []aiplane.Citation) []aiplane.Citation {
 	var out []aiplane.Citation
 	for _, c := range cs {
-		if c.FactID != "" && c.Kind != "" && c.Key != "" {
+		// drop any citation Validate would reject (empty, over-long, non-UTF8, or
+		// control-byte-carrying), not just empty ones: Validate rejects the WHOLE
+		// proposal on a single malformed citation, so one junk citation from the
+		// untrusted model would otherwise discard every good hypothesis with it.
+		if aiplane.CitationWellFormed(c) {
 			out = append(out, c)
 		}
 	}

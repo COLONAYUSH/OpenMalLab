@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -204,6 +205,34 @@ func TestGroundIOCsDropsFabricated(t *testing.T) {
 	}, ev)
 	if len(kept) != 1 || kept[0].Value != "acme-c2.example" {
 		t.Fatalf("only evidence-grounded IOCs may survive: %+v", kept)
+	}
+}
+
+func TestCleanCitesDropsMalformedNotJustEmpty(t *testing.T) {
+	good := aiplane.Citation{FactID: "kf_abc123", Kind: "attck", Key: "T1055"}
+	cs := []aiplane.Citation{
+		good,
+		{FactID: "kf_x", Kind: "attck", Key: "T1\x00055"},              // control byte -> malformed
+		{FactID: "", Kind: "attck", Key: "T1071"},                      // empty fact_id -> malformed
+		{FactID: "kf_z", Kind: strings.Repeat("A", 100000), Key: "T1"}, // over-long -> malformed
+	}
+	out := cleanCites(cs)
+	if len(out) != 1 || out[0] != good {
+		t.Fatalf("cleanCites must keep only well-formed citations, got %+v", out)
+	}
+
+	// the survivor validates cleanly...
+	clean := aiplane.Proposal{Hypotheses: []aiplane.Hypothesis{{Kind: "technique", Claim: "x", Confidence: "LOW", Citations: out}}}
+	cj, _ := json.Marshal(clean)
+	if _, err := aiplane.Validate(cj); err != nil {
+		t.Fatalf("a proposal with only well-formed citations must validate: %v", err)
+	}
+	// ...and this is load-bearing: WITHOUT cleaning, the malformed citation makes
+	// Validate reject the WHOLE proposal (fail-closed), discarding the good one too.
+	dirty := aiplane.Proposal{Hypotheses: []aiplane.Hypothesis{{Kind: "technique", Claim: "x", Confidence: "LOW", Citations: cs}}}
+	dj, _ := json.Marshal(dirty)
+	if _, err := aiplane.Validate(dj); err == nil {
+		t.Fatal("expected Validate to reject a proposal carrying a malformed citation (proves cleanCites is load-bearing)")
 	}
 }
 

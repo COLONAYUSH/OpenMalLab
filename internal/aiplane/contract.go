@@ -254,6 +254,23 @@ func citationToken(s string, maxBytes int) (string, bool) {
 	return s, true
 }
 
+// CitationWellFormed reports whether a citation would survive Validate's per-field
+// citation check (all of FactID/Kind/Key non-empty, bounded, valid UTF-8, no
+// control bytes). Validate rejects the WHOLE proposal on a single malformed
+// citation (fail-closed), so a caller assembling a proposal from untrusted agent
+// output should drop citations that fail this FIRST - otherwise one junk citation
+// the model emitted would discard every good hypothesis alongside it.
+func CitationWellFormed(c Citation) bool {
+	if _, ok := citationToken(c.FactID, maxFieldLen); !ok {
+		return false
+	}
+	if _, ok := citationToken(c.Kind, maxFieldLen); !ok {
+		return false
+	}
+	_, ok := citationToken(c.Key, maxFieldLen)
+	return ok
+}
+
 // hasControlChars reports whether s carries a C0/C1 control or DEL - exactly the
 // bytes the L0 registry refuses in a key, so a citation carrying one could never
 // match a stored fact regardless.
