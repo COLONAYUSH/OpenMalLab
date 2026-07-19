@@ -5,6 +5,7 @@ go 1.26
 require (
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/stretchr/testify v1.11.1
+	go.etcd.io/bbolt v1.3.11
 	go.temporal.io/api v1.63.0
 	go.temporal.io/sdk v1.46.0
 )
