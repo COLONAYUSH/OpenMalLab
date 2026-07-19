@@ -18,6 +18,10 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 BASE="${BASE:-http://localhost:8080}"
 COMPOSE=(-f "$HERE/../compose.yaml" -f "$HERE/../compose.ai.yaml")
+# extra overlay(s), space-separated, appended in order. e.g.
+# EXTRA_COMPOSE=compose.cloud.yaml proves the loop against the guarded CLOUD model
+# instead of the sovereign local one (no local weight download needed).
+if [ -n "${EXTRA_COMPOSE:-}" ]; then for f in $EXTRA_COMPOSE; do COMPOSE+=(-f "$HERE/../$f"); done; fi
 ENRICH_TIMEOUT="${ENRICH_TIMEOUT:-360}" # a CPU model + full roster can take minutes
 
 say()  { echo "== $*"; }
@@ -25,6 +29,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 jget() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get(sys.argv[1],""))' "$1"; }
 submit()        { curl -fsS -F "file=@$1" "$BASE/v1/submissions" | jget submission_id; }
 get()           { curl -fsS "$BASE/v1/submissions/$1"; }
+# bytes in the persistent L0 store on its volume (0 if absent). the orchestrator
+# image is scratch (no shell), so peek at the volume through a throwaway helper.
+db_bytes()      { docker run --rm -v openmallab-knowledge:/k debian:12 sh -c 'wc -c < /k/l0.db 2>/dev/null || echo 0' | tr -cd '0-9'; }
 await_verdict() { for i in $(seq 1 120); do b=$(get "$1"); [ -n "$(echo "$b" | jget verdict)" ] && { echo "$b"; return 0; }; sleep 1; done; fail "submission $1 never got a verdict"; }
 
 say "bringing up the full live stack (deterministic + AI plane overlay)"
@@ -37,9 +44,10 @@ fi
 say "waiting for the gateway"
 for i in $(seq 1 90); do curl -fsS "$BASE/healthz" >/dev/null 2>&1 && break; [ "$i" = 90 ] && fail "gateway never came up"; sleep 1; done
 
-# mal-agents depends_on ollama:service_healthy, and ollama is healthy only once the
-# MODEL is present - so mal-agents reaching healthy PROVES the model is provisioned.
-say "waiting for the roster (proves the sovereign model is provisioned)"
+# on the sovereign path mal-agents depends_on ollama:service_healthy (healthy only
+# once the MODEL is present), so reaching healthy proves the model is provisioned; on
+# the cloud path it just means the roster service itself is up and answering.
+say "waiting for the roster to report healthy"
 for i in $(seq 1 120); do
   h=$(docker compose "${COMPOSE[@]}" ps mal-agents --format '{{.Health}}' 2>/dev/null || true)
   [ "$h" = "healthy" ] && break
@@ -113,15 +121,21 @@ else
   say "no human review required for this submission (the gate did not escalate)."
 fi
 
-# Curation-survives-restart is the PERSISTENT-STORE acceptance (task T3). Until the
-# embedded store lands, L0/L1 are in-memory and curation does not persist; this
-# section asserts it only when MAL_ASSERT_PERSIST=1 (set once T3 is merged).
+# Curation-survives-restart is the PERSISTENT-STORE acceptance (task T3). With the
+# embedded BoltDB store wired (MAL_KNOWLEDGE_DB on the openmallab-knowledge volume),
+# the curated L0 outlives the process: assert the store file is present and non-empty
+# (the seed + any curation landed durably), restart the orchestrator, and assert it is
+# still there and no smaller. asserted only when MAL_ASSERT_PERSIST=1.
 if [ "${MAL_ASSERT_PERSIST:-0}" = "1" ]; then
-  say "restarting the orchestrator; asserting curated knowledge survives"
+  say "PERSISTENCE: asserting the curated L0 store survives an orchestrator restart"
+  before=$(db_bytes)
+  [ "${before:-0}" -gt 0 ] 2>/dev/null || fail "L0 store /knowledge/l0.db missing or empty BEFORE restart (${before:-0} bytes) - is MAL_KNOWLEDGE_DB wired + the volume mounted?"
+  say "  L0 store before restart: ${before} bytes on the openmallab-knowledge volume"
   docker compose "${COMPOSE[@]}" restart orchestrator >/dev/null
-  for i in $(seq 1 60); do curl -fsS "$BASE/healthz" >/dev/null 2>&1 && break; sleep 1; done
-  # (a curation-grounded re-submission assertion goes here once T3 exposes it)
-  say "orchestrator restarted; persistence path exercised."
+  for i in $(seq 1 60); do curl -fsS "$BASE/healthz" >/dev/null 2>&1 && break; [ "$i" = 60 ] && fail "gateway did not recover after orchestrator restart"; sleep 1; done
+  after=$(db_bytes)
+  [ "${after:-0}" -ge "${before:-0}" ] 2>/dev/null || fail "L0 store shrank or vanished across restart (before=${before} after=${after}) - curation did NOT persist"
+  say "  L0 store after restart: ${after} bytes (>= before) - curated knowledge survived."
 fi
 
 echo ""
