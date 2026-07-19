@@ -42,8 +42,17 @@ def evidence_prompt(ev: Evidence, priors: Priors | None = None) -> str:
     return prompt + "Return the structured behaviors."
 
 
-async def run(ev: Evidence, priors: Priors | None = None) -> Behaviors:
-    """Run the capability reasoner end to end and return its typed behaviors."""
+async def run(ev: Evidence, priors: Priors | None = None, temperature: float = 0.0) -> Behaviors:
+    """Run the capability reasoner end to end and return its typed behaviors.
+
+    temperature > 0 overrides the deterministic default for the spine's
+    self-consistency re-sampling (so repeated calls vary and disagreement is
+    measurable); the default run stays deterministic (temperature 0)."""
     agent = build_capability_reasoner()
-    result = await agent.run(evidence_prompt(ev, priors))
+    kw = {}
+    if temperature and temperature > 0:
+        from pydantic_ai.settings import ModelSettings
+
+        kw["model_settings"] = ModelSettings(temperature=temperature)
+    result = await agent.run(evidence_prompt(ev, priors), **kw)
     return result.output

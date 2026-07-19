@@ -277,6 +277,45 @@ func TestGateActivityRecordsRetrievalTiers(t *testing.T) {
 	}
 }
 
+func TestSampleAgreement(t *testing.T) {
+	// #13: self-consistency = the fraction of samples reproducing a technique's ttp.
+	samples := [][]string{{"T1055", "T1071"}, {"T1055"}, {"T1071"}}
+	if got := sampleAgreement("T1055", samples); got < 0.66 || got > 0.67 {
+		t.Fatalf("T1055 in 2/3 samples should be ~0.667, got %v", got)
+	}
+	if got := sampleAgreement("T9999", samples); got != 0 {
+		t.Fatalf("a ttp no sample reproduced must be 0, got %v", got)
+	}
+	if got := sampleAgreement("", samples); got != 0 {
+		t.Fatalf("empty ttp must be 0, got %v", got)
+	}
+	if got := sampleAgreement("T1055", nil); got != 0 {
+		t.Fatalf("no samples must be 0, got %v", got)
+	}
+	if got := sampleAgreement("T1055", [][]string{{"T1055"}, {"T1055"}}); got != 1.0 {
+		t.Fatalf("a unanimous ttp must be 1.0, got %v", got)
+	}
+}
+
+func TestSelfConsistencySamplesEnvClamp(t *testing.T) {
+	t.Setenv("MAL_SELF_CONSISTENCY_SAMPLES", "")
+	if selfConsistencySamples() != 1 {
+		t.Fatal("default (unset) must be 1 = off")
+	}
+	t.Setenv("MAL_SELF_CONSISTENCY_SAMPLES", "3")
+	if selfConsistencySamples() != 3 {
+		t.Fatal("3 must be honored")
+	}
+	t.Setenv("MAL_SELF_CONSISTENCY_SAMPLES", "99")
+	if selfConsistencySamples() != 5 {
+		t.Fatal("must clamp to 5")
+	}
+	t.Setenv("MAL_SELF_CONSISTENCY_SAMPLES", "garbage")
+	if selfConsistencySamples() != 1 {
+		t.Fatal("garbage must fall back to 1 = off")
+	}
+}
+
 func TestGroundIOCsDropsFabricated(t *testing.T) {
 	// B2: only IOCs actually present in the trusted evidence survive; a fabricated
 	// one is dropped, never accepted from the agent's paraphrase.

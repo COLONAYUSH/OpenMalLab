@@ -37,23 +37,25 @@ ROSTER = (
 )
 
 
-async def run_agent(name, ev, *, priors=None, claim="", reason="", confirmed=None):
+async def run_agent(name, ev, *, priors=None, claim="", reason="", confirmed=None, temperature=0.0):
     """Dispatch to a roster agent by name, wrapped in an optional Langfuse trace.
 
     Raises ValueError on an unknown name (fail-closed). The Temporal graph calls
-    this via the HTTP surface; each agent's own typed output is returned.
+    this via the HTTP surface; each agent's own typed output is returned. temperature
+    > 0 is honored only by sampling agents (the capability reasoner, for the spine's
+    self-consistency re-runs); the rest stay deterministic.
     """
     with trace("agent:" + name, submission=getattr(ev, "submission_id", "")):
-        return await _dispatch(name, ev, priors=priors, claim=claim, reason=reason, confirmed=confirmed)
+        return await _dispatch(name, ev, priors=priors, claim=claim, reason=reason, confirmed=confirmed, temperature=temperature)
 
 
-async def _dispatch(name, ev, *, priors=None, claim="", reason="", confirmed=None):
+async def _dispatch(name, ev, *, priors=None, claim="", reason="", confirmed=None, temperature=0.0):
     if name == "router":
         return await router.run(ev)
     if name == "correlator":
         return await correlator.run(ev)
     if name == "capability_reasoner":
-        return await capability_reasoner.run(ev, priors)
+        return await capability_reasoner.run(ev, priors, temperature=temperature)
     if name == "ioc_extractor":
         return await ioc_extractor.run(ev)
     if name == "family_hypothesizer":

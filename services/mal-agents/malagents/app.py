@@ -74,6 +74,7 @@ class AgentRequest(BaseModel):
     claim: str = ""
     reason: str = ""
     confirmed: list[str] = Field(default_factory=list)
+    temperature: float = 0.0  # >0 asks a sampling agent (capability reasoner) to vary, for self-consistency
 
 
 @app.post("/v1/agent/{name}")
@@ -89,4 +90,5 @@ async def v1_agent(name: str, req: AgentRequest):
         claim=req.claim,
         reason=req.reason,
         confirmed=req.confirmed,
+        temperature=req.temperature,
     )

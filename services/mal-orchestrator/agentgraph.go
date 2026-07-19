@@ -30,7 +30,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,11 +67,12 @@ type agentCaller interface {
 // agentReq mirrors the Python AgentRequest envelope. only the fields an agent
 // consumes are read on the other side.
 type agentReq struct {
-	Evidence  aiplane.Evidence `json:"evidence"`
-	Priors    json.RawMessage  `json:"priors,omitempty"`
-	Claim     string           `json:"claim,omitempty"`
-	Reason    string           `json:"reason,omitempty"`
-	Confirmed []string         `json:"confirmed,omitempty"`
+	Evidence    aiplane.Evidence `json:"evidence"`
+	Priors      json.RawMessage  `json:"priors,omitempty"`
+	Claim       string           `json:"claim,omitempty"`
+	Reason      string           `json:"reason,omitempty"`
+	Confirmed   []string         `json:"confirmed,omitempty"`
+	Temperature float64          `json:"temperature,omitempty"` // >0 asks the agent to sample (self-consistency re-runs)
 }
 
 // httpAgentCaller talks to the jailed Python agent service over the isolated
@@ -219,12 +222,15 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 	// model's self-reported score - so a model cannot under-report novelty to slip a
 	// genuinely new artifact past the escalation.
 	spineNovelty := a.noveltyOf(ev)
+	var hypTTP []string      // parallel to hyps: a technique hyp's ttp, "" otherwise
+	var primaryTTPs []string // the primary capability run's ttps (sample 1 of self-consistency)
 
 	if want["family_hypothesizer"] {
 		if raw, err := a.agents.call(ctx, "family_hypothesizer", agentReq{Evidence: ev, Priors: priors}); err == nil {
 			var fh agentFamily
 			if json.Unmarshal(raw, &fh) == nil && fh.Family != "" {
 				hyps = append(hyps, aiplane.Hypothesis{Kind: "family", Claim: fh.Family, Confidence: fh.Confidence, Citations: cleanCites(fh.Citations)})
+				hypTTP = append(hypTTP, "")
 			}
 		}
 	}
@@ -233,10 +239,14 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 			var b agentBehaviors
 			if json.Unmarshal(raw, &b) == nil {
 				for _, bh := range b.Behaviors {
+					if bh.TTP != "" {
+						primaryTTPs = append(primaryTTPs, bh.TTP)
+					}
 					if bh.Why == "" {
 						continue
 					}
 					hyps = append(hyps, aiplane.Hypothesis{Kind: "technique", Claim: bh.Why, Confidence: "LOW", Citations: cleanCites(bh.Citations)})
+					hypTTP = append(hypTTP, bh.TTP)
 				}
 			}
 		}
@@ -265,11 +275,41 @@ func (a *Analyzer) RunRosterActivity(ctx context.Context, res pipeline.Submissio
 
 	prop := aiplane.Proposal{Summary: summary, Hypotheses: hyps, IOCs: iocs}
 
+	// #13 self-consistency (design sec 06): OPTIONAL, config-gated. off by default
+	// (MAL_SELF_CONSISTENCY_SAMPLES <= 1) so there is no added latency; when >1, the
+	// capability reasoner is re-sampled at a non-zero temperature and a technique's
+	// self-consistency is the fraction of samples that reproduce its ttp. a claim
+	// only some samples make is less trustworthy - below the floor the gate escalates.
+	sampleTTPs := [][]string{primaryTTPs}
+	if n := selfConsistencySamples(); n > 1 && want["capability_reasoner"] {
+		for s := 1; s < n; s++ {
+			raw, err := a.agents.call(ctx, "capability_reasoner", agentReq{Evidence: ev, Priors: priors, Temperature: selfConsistencyTemp})
+			if err != nil {
+				continue
+			}
+			var b agentBehaviors
+			if json.Unmarshal(raw, &b) != nil {
+				continue
+			}
+			var ttps []string
+			for _, bh := range b.Behaviors {
+				if bh.TTP != "" {
+					ttps = append(ttps, bh.TTP)
+				}
+			}
+			sampleTTPs = append(sampleTTPs, ttps)
+		}
+	}
+	measureConsistency := len(sampleTTPs) > 1 // more than the primary sample = actually measured
+
 	// adversarial verifier per hypothesis -> gate signals. no verifier reachable
 	// means refuted (fail-closed: an unverifiable claim cannot ground autonomy).
 	signals := make([]aiplane.GateSignals, len(hyps))
 	for i, h := range hyps {
 		sig := aiplane.GateSignals{Novelty: spineNovelty}
+		if measureConsistency && i < len(hypTTP) && hypTTP[i] != "" {
+			sig.SelfConsistency = sampleAgreement(hypTTP[i], sampleTTPs)
+		}
 		// calibration (downgrade-only): a category whose confident claims have been
 		// historically wrong gets its self-report recalibrated down before the gate.
 		if a.calibration != nil {
@@ -595,6 +635,40 @@ func containsStr(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+const selfConsistencyTemp = 0.7 // sampling temperature for the self-consistency re-runs
+
+// selfConsistencySamples is how many times to sample the reasoner to MEASURE
+// self-consistency. 1 (the default) means OFF - no re-sampling, and the axis stays
+// unmeasured so the gate is unaffected. bounded to [1,5] so a misconfiguration
+// cannot fan out unboundedly.
+func selfConsistencySamples() int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("MAL_SELF_CONSISTENCY_SAMPLES")))
+	if err != nil || n < 1 {
+		return 1
+	}
+	if n > 5 {
+		return 5
+	}
+	return n
+}
+
+// sampleAgreement is the measured self-consistency of a technique claim: the
+// fraction of the N reasoner samples whose ttp-set reproduced `ttp`. 1.0 means
+// every sample agreed; a low value means only some did (an unstable claim the gate
+// should downgrade).
+func sampleAgreement(ttp string, samples [][]string) float64 {
+	if ttp == "" || len(samples) == 0 {
+		return 0
+	}
+	hits := 0
+	for _, s := range samples {
+		if containsStr(s, ttp) {
+			hits++
+		}
+	}
+	return float64(hits) / float64(len(samples))
 }
 
 // groundIOCs enforces B2 (reconstruct from trusted): an agent-proposed IOC is kept
