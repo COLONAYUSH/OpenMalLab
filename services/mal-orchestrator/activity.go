@@ -78,6 +78,13 @@ type Analyzer struct {
 	capaScratch   string
 	flossMemBytes int64
 	flossScratch  string
+	// mal-detonate runs a full emulator over the sample, so like capa/floss it gets
+	// a raised memory + scratch jail and a wall clock generous enough for a real
+	// guest run but below the Temporal heavy-activity timeout.
+	detonateImage    string
+	detonateWall     time.Duration
+	detonateMemBytes int64
+	detonateScratch  string
 
 	// optional AI-analyst plane. nil in the air-gapped default (no model wired);
 	// when set, EnrichmentWorkflow runs it as a caged, async, post-verdict step.
@@ -146,6 +153,28 @@ func (a *Analyzer) IdentifyActivity(ctx context.Context, in pipeline.SubmissionI
 		mounts:       []mount.Mount{sampleMount(a.vaultVolume, in.SHA256)},
 		wallClock:    a.identWall,
 		submissionID: in.SubmissionID,
+	}, in.SHA256)
+	if err != nil {
+		return pipeline.EngineReport{}, err
+	}
+	return mapReport(br), nil
+}
+
+// DetonateActivity runs the sample under the jailed emulator (mal-detonate) and
+// reports the behavior it observed: process/exec, file writes, network attempts,
+// persistence, evasive sleeps. Dynamic analysis EXECUTES the sample (as data, via
+// the trusted emulator), so it is the heaviest jail, yet every security flag of the
+// recipe is unchanged: like capa/floss it only raises memory + scratch and points
+// HOME/TMPDIR at the writable scratch. Dispatched on request, ELF only, root only.
+func (a *Analyzer) DetonateActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
+	br, err := a.runWorkerThroughBroker(ctx, jailSpec{
+		image:        a.detonateImage,
+		mounts:       []mount.Mount{sampleMount(a.vaultVolume, in.SHA256)},
+		wallClock:    a.detonateWall,
+		submissionID: in.SubmissionID,
+		env:          []string{"HOME=/scratch", "TMPDIR=/scratch"},
+		memoryBytes:  a.detonateMemBytes,
+		scratchSize:  a.detonateScratch,
 	}, in.SHA256)
 	if err != nil {
 		return pipeline.EngineReport{}, err

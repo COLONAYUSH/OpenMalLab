@@ -95,6 +95,13 @@ func main() {
 		capaScratch:   envOr("MAL_CAPA_SCRATCH", "256m"),
 		flossMemBytes: envInt64Or("MAL_FLOSS_MEMORY_BYTES", 2<<30),
 		flossScratch:  envOr("MAL_FLOSS_SCRATCH", "256m"),
+		// dynamic analysis: qemu-user TCG needs room but less than vivisect. the wall
+		// clock must exceed the wrapper's own guest self-timeout (default 60s) so the
+		// wrapper reports a clean detonation-timeout instead of being killed mid-write.
+		detonateImage:    envOr("MAL_DETONATE_IMAGE", "openmallab/mal-detonate:m0"),
+		detonateWall:     envDurOr("MAL_DETONATE_WALL_CLOCK", 120*time.Second),
+		detonateMemBytes: envInt64Or("MAL_DETONATE_MEMORY_BYTES", 1<<30), // 1 GiB
+		detonateScratch:  envOr("MAL_DETONATE_SCRATCH", "128m"),
 	}
 
 	// crash hygiene: jails are single-use and staging dirs are per-run; anything
@@ -166,8 +173,8 @@ func main() {
 	w.RegisterWorkflow(AgentGraphWorkflow)
 	w.RegisterActivity(a)
 
-	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s capa=%s floss=%s broker=%s)",
-		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.extractImage, a.capaImage, a.flossImage, a.brokerImage)
+	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s capa=%s floss=%s detonate=%s broker=%s)",
+		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.extractImage, a.capaImage, a.flossImage, a.detonateImage, a.brokerImage)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker stopped: %v", err)
 	}

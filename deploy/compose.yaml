@@ -140,6 +140,7 @@ services:
       MAL_EXTRACT_IMAGE: openmallab/mal-extract:m0
       MAL_CAPA_IMAGE: openmallab/mal-capa:m0
       MAL_FLOSS_IMAGE: openmallab/mal-floss:m0
+      MAL_DETONATE_IMAGE: openmallab/mal-detonate:m0
       MAL_BROKER_IMAGE: openmallab/mal-broker:m0
     volumes:
       # the engine socket is the spawn authority in phase 1: the orchestrator
@@ -215,6 +216,17 @@ services:
       secrets:
         - pip_conf
     image: openmallab/mal-floss:m0
+
+  # dynamic-analysis worker: detonates an ELF under a jailed qemu-user emulator and
+  # mines the syscall trace. stdlib python + apt-installed emulator, so no pip and no
+  # build secret. on a clean network this builds normally; on a proxy that firewalls
+  # the BuildKit sandbox, build with the legacy builder (DOCKER_BUILDKIT=0).
+  mal-detonate:
+    profiles: [build]
+    build:
+      context: ..
+      dockerfile: services/mal-detonate/Dockerfile
+    image: openmallab/mal-detonate:m0
 
   mal-broker:
     profiles: [build]

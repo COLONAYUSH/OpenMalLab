@@ -177,6 +177,12 @@ func ConfidenceFor(engine, findingType string, v Verdict) Confidence {
 	if engine == "mal-capa" && findingType == "capability" && v >= Suspicious {
 		return ConfMedium
 	}
+	// mal-detonate reports OBSERVED runtime behavior: strong signal, but still
+	// behavioral inference (and emulated), so medium at most, same tier as capa.
+	// its UNKNOWN summaries, timeouts, and errors fall through to LOW below.
+	if engine == "mal-detonate" && v >= Suspicious {
+		return ConfMedium
+	}
 	// informational output (identification, archive typing, behavioral context)
 	// carries an UNKNOWN verdict and scores zero regardless; keep it out of the
 	// confidence axis.
@@ -271,6 +277,11 @@ type SubmissionInput struct {
 	SHA256       string `json:"sha256"`
 	ScratchPath  string `json:"scratch_path"`       // vault-local path to the stored bytes
 	Filename     string `json:"filename,omitempty"` // the submitted name, hostile: display-only, always defanged
+	// Detonate opts this submission into dynamic analysis: the root ELF is executed,
+	// as data, under the jailed emulator. OFF by default. Detonation is heavy and
+	// actually runs the sample, so in v1 it is requested per submission, never
+	// automatic, and the orchestrator gates it on the artifact being an ELF.
+	Detonate bool `json:"detonate,omitempty"`
 }
 
 // Finding is one piece of evidence-linked signal from an engine. It is the

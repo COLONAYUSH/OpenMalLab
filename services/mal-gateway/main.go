@@ -97,6 +97,12 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = os.Chmod(dst, 0o600)
 
+	// optional opt-in to dynamic analysis. detonation EXECUTES the sample, so it is
+	// never automatic: the caller asks per submission (form field detonate=true), and
+	// the orchestrator still gates it on the root artifact being an ELF.
+	dv := r.FormValue("detonate")
+	detonate := dv == "true" || dv == "1" || dv == "on" || dv == "yes"
+
 	id := newID()
 	in := pipeline.SubmissionInput{
 		SubmissionID: id,
@@ -104,6 +110,7 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		SHA256:       sum,
 		ScratchPath:  dst,
 		Filename:     name,
+		Detonate:     detonate,
 	}
 	_, err = s.tc.ExecuteWorkflow(r.Context(),
 		client.StartWorkflowOptions{ID: id, TaskQueue: taskQueue},

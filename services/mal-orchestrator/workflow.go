@@ -196,6 +196,16 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 			fold(item.Path, "mal-floss", flossF)
 		}
 
+		// dynamic analysis, ELF only and ONLY when the submitter opted in: detonation
+		// EXECUTES the sample (as data, under the jailed emulator), so v1 runs it on
+		// request and only on the ROOT artifact (never on extracted children, whose
+		// detonation would be an unbounded risk + budget explosion). heavy and
+		// non-deterministic, so it shares the heavy context like capa/floss.
+		if in.Detonate && item.Depth == 0 && isELF(identRep) {
+			detonateF := workflow.ExecuteActivity(heavyCtx, a.DetonateActivity, artifact)
+			fold(item.Path, "mal-detonate", detonateF)
+		}
+
 		// unpack one level. extraction runs on every artifact (we never trust an
 		// identifier about whether something is a container). children are
 		// enqueued only while within the depth cap; a child that exists AT the
@@ -327,6 +337,19 @@ func isExecutable(ident pipeline.EngineReport) bool {
 func isPE(ident pipeline.EngineReport) bool {
 	for _, f := range ident.Findings {
 		if f.Type == "file-type" && f.Detail == "pebin" {
+			return true
+		}
+	}
+	return false
+}
+
+// isELF decides whether detonation should run: v1 dynamically analyzes Linux ELF
+// executables (x86-64/aarch64) by running them under the jailed emulator. "elf" is
+// magika's own content label for an ELF (there is no "elf64"/arch split at this
+// layer; the worker detects the guest arch from the ELF header itself).
+func isELF(ident pipeline.EngineReport) bool {
+	for _, f := range ident.Findings {
+		if f.Type == "file-type" && f.Detail == "elf" {
 			return true
 		}
 	}
