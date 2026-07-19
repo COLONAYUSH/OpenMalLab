@@ -122,7 +122,8 @@ type GateResult struct {
 // only immutable config and calls the verifier, which is itself concurrency-safe.
 type Gate struct {
 	verifier   CitationVerifier
-	autonomous map[string]bool // hypothesis kinds that MAY be accepted autonomously
+	autonomous map[string]bool // hypothesis kinds ELIGIBLE for autonomous acceptance
+	grad       *Graduation     // optional: a kind must also have EARNED autonomous mode
 }
 
 // defaultAutonomousKinds is the static allow-list of LOW-stakes, high-reliability
@@ -157,6 +158,14 @@ func NewGateWithPolicy(v CitationVerifier, autonomousKinds map[string]bool) *Gat
 	return &Gate{verifier: v, autonomous: autonomousKinds}
 }
 
+// NewGateWithGraduation builds a gate whose autonomy is EARNED per category (sec
+// 14): the static allow-list says which kinds are eligible, and the Graduation
+// policy says whether each has earned autonomous mode yet. an eligible kind still
+// starts in shadow (dropped/logged) and only auto-accepts once graduated.
+func NewGateWithGraduation(v CitationVerifier, grad *Graduation) *Gate {
+	return &Gate{verifier: v, autonomous: defaultAutonomousKinds, grad: grad}
+}
+
 // Evaluate applies the inverted, downgrade-only policy to a VALIDATED proposal
 // against trusted evidence. it must be given a Proposal that already passed
 // Validate; it re-derives nothing from raw bytes. the submission id is taken
@@ -185,6 +194,22 @@ func (g *Gate) EvaluateWithSignals(ev Evidence, p Proposal, signals []GateSignal
 		gh.VerifiedCitations = len(gh.VerifiedCitationIDs)
 		grounded := gh.VerifiedCitations > 0
 		allowed := g.autonomous[h.Kind]
+
+		// autonomy graduation (sec 14): a category must have EARNED autonomous mode.
+		// shadow = observed only (dropped + logged); supervised = always escalate,
+		// never auto-accept; autonomous = eligible (still subject to the allow-list,
+		// grounding, and every stop signal below).
+		if g.grad != nil {
+			switch g.grad.Mode(h.Kind) {
+			case ModeShadow:
+				gh.Disposition = DispDrop
+				gh.Reasons = append(gh.Reasons, fmt.Sprintf("category %q in shadow mode: observed, not acted on", h.Kind))
+				res.Hypotheses = append(res.Hypotheses, gh)
+				continue
+			case ModeSupervised:
+				allowed = false // supervised proposes to a human; it never auto-accepts
+			}
+		}
 
 		var sig GateSignals
 		if i < len(signals) {
