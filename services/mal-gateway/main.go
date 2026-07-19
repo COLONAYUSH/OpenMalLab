@@ -141,6 +141,30 @@ func (s *server) enrichmentOverlay(ctx context.Context, id string, base pipeline
 	return enr, true
 }
 
+// reviewState returns the pending HITL review for a submission IFF its enrichment
+// workflow is RUNNING and has raised one. a completed or absent workflow has NO
+// pending review - a Temporal query on a closed workflow replays its last state and
+// would return a stale request, so gating on RUNNING is what makes "pending" mean
+// actually-still-awaiting-a-human (fixes a review that lingered after resolution).
+func (s *server) reviewState(ctx context.Context, id string) (reviewRequest, bool) {
+	eid := id + "-enrich"
+	dctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	desc, err := s.tc.DescribeWorkflowExecution(dctx, eid, "")
+	if err != nil || desc.GetWorkflowExecutionInfo().GetStatus() != enums.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		return reviewRequest{}, false
+	}
+	val, err := s.tc.QueryWorkflow(dctx, eid, "", reviewQueryName)
+	if err != nil {
+		return reviewRequest{}, false
+	}
+	var req reviewRequest
+	if err := val.Get(&req); err != nil || req.Question == "" {
+		return reviewRequest{}, false
+	}
+	return req, true
+}
+
 func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/submissions/")
 	if id == "" {
@@ -158,6 +182,13 @@ func (s *server) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// overlay the async AI enrichment if it has landed (durable, raise-only).
 	res, enriched := s.enrichmentOverlay(ctx, id, res)
+	// not landed yet but AWAITING a human (escalated child still running): surface the
+	// review flag now so the console highlights it before the full result completes.
+	if !enriched {
+		if _, pending := s.reviewState(ctx, id); pending {
+			res.NeedsReview = true
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"submission_id": res.SubmissionID,
 		"sha256":        res.SHA256,
@@ -314,13 +345,10 @@ func (s *server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	val, err := s.tc.QueryWorkflow(ctx, id+"-enrich", "", reviewQueryName)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"submission_id": id, "pending": false})
-		return
-	}
-	var req reviewRequest
-	if err := val.Get(&req); err != nil || req.Question == "" {
+	// pending only while the enrichment child is RUNNING + awaiting (reviewState gates
+	// on that), so a resolved/closed review no longer reports as pending.
+	req, pending := s.reviewState(ctx, id)
+	if !pending {
 		writeJSON(w, http.StatusOK, map[string]any{"submission_id": id, "pending": false})
 		return
 	}

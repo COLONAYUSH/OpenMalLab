@@ -60,13 +60,29 @@ BODY=$(await_verdict "$ID")
 DET_VERDICT=$(echo "$BODY" | jget verdict)
 say "deterministic verdict: $DET_VERDICT ($ID)"
 
-say "awaiting ASYNC AI enrichment to COMPLETE (enriched=true means the <id>-enrich child finished)"
+# Await enrichment, resolving the HITL review inline if the gate escalates. An
+# escalated submission NEVER reaches enriched=true until its review is answered, so
+# polling enriched alone would hang - we watch for needs_review and approve it, then
+# the child finishes and enriched flips. (needs_review is surfaced WHILE the child
+# waits by the gateway; a non-escalated submission just flips enriched on its own.)
+say "awaiting ASYNC AI enrichment; resolving the HITL review inline if the gate escalates"
+RESOLVED=0
 for i in $(seq 1 "$ENRICH_TIMEOUT"); do
   BODY=$(get "$ID")
   [ "$(echo "$BODY" | jget enriched)" = "True" ] && break
+  if [ "$RESOLVED" = 0 ] && [ "$(echo "$BODY" | jget needs_review)" = "True" ]; then
+    RV=$(curl -fsS "$BASE/v1/submissions/$ID/review")
+    if [ "$(echo "$RV" | jget pending)" = "True" ]; then
+      say "HITL: gate escalated, a review is pending - approving it through the gateway"
+      DEC=$(curl -fsS -X POST "$BASE/v1/submissions/$ID/review" -H 'content-type: application/json' -d '{"approved":true,"note":"e2e-live approve"}')
+      [ "$(echo "$DEC" | jget recorded)" = "True" ] || fail "review decision not recorded: $DEC"
+      RESOLVED=1
+      say "HITL review approved + recorded; awaiting the enrichment child to finish"
+    fi
+  fi
   sleep 1
 done
-[ "$(echo "$BODY" | jget enriched)" = "True" ] || fail "AI enrichment never completed for $ID within ${ENRICH_TIMEOUT}s"
+[ "$(echo "$BODY" | jget enriched)" = "True" ] || fail "AI enrichment never completed for $ID within ${ENRICH_TIMEOUT}s (needs_review=$(echo "$BODY" | jget needs_review) resolved=$RESOLVED)"
 
 say "asserting CONTAINMENT of the enrichment"
 echo "$BODY" | python3 -c '
@@ -84,16 +100,17 @@ assert rank.get(d["verdict"],0) <= max(det_max, rank["SUSPICIOUS"]), "verdict in
 print("  enrichment contained: %d mal-ai finding(s), all <= SUSPICIOUS; verdict=%s needs_review=%s" % (len(ai), d["verdict"], d.get("needs_review")))
 ' || fail "enrichment containment violated: $BODY"
 
-# HITL round-trip: if the gate escalated, the review must be queryable + resolvable.
-if [ "$(echo "$BODY" | jget needs_review)" = "True" ]; then
-  say "HITL: a review is pending; querying + resolving it through the gateway"
+# HITL round-trip verification. If the gate escalated we already approved the review
+# inline (above); assert it now reports NOT pending - the enrichment child has closed,
+# so a query on it must no longer replay a stale pending request (regression guard for
+# the gateway gating "pending" on the child actually being RUNNING).
+if [ "$RESOLVED" = 1 ]; then
+  say "HITL round-trip: review was queried, approved, recorded, and the child finished"
   RV=$(curl -fsS "$BASE/v1/submissions/$ID/review")
-  [ "$(echo "$RV" | jget pending)" = "True" ] || fail "needs_review set but no pending review task: $RV"
-  DEC=$(curl -fsS -X POST "$BASE/v1/submissions/$ID/review" -H 'content-type: application/json' -d '{"approved":true,"note":"e2e-live approve"}')
-  [ "$(echo "$DEC" | jget recorded)" = "True" ] || fail "review decision not recorded: $DEC"
-  say "HITL review resolved (approved) and recorded."
+  [ "$(echo "$RV" | jget pending)" = "False" ] || fail "review STILL pending after resolution + completion (stale-query regression): $RV"
+  say "post-resolution /review correctly reports pending=false."
 else
-  say "no human review required for this submission (nothing to resolve)."
+  say "no human review required for this submission (the gate did not escalate)."
 fi
 
 # Curation-survives-restart is the PERSISTENT-STORE acceptance (task T3). Until the
