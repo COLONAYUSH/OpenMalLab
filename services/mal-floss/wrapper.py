@@ -33,6 +33,10 @@ EMU_TIMEOUT = int(os.environ.get("MAL_FLOSS_EMU_TIMEOUT", "200"))
 # so we summarize their count instead of flooding the evidence tree.
 MAX_STRINGS = 250
 MAX_STATIC_SAMPLE = 40
+# hard ceiling on the WHOLE serialized report: cap_detail bounds each finding and
+# MAX_STRINGS bounds the count, but 250 x ~8 KB can still exceed the 1 MiB
+# broker/jail cap and get the ENTIRE report discarded downstream. headroom < 1 MiB.
+MAX_TOTAL_BYTES = 900_000
 
 
 def emit(findings, verdict, incomplete):
@@ -54,6 +58,30 @@ def cap_detail(detail):
 
 def finding(kind, detail, verdict):
     return {"engine": "mal-floss", "type": kind, "detail": cap_detail(detail), "attck": "", "verdict": verdict}
+
+
+def _report_bytes(findings, incomplete):
+    # the exact serialized size emit() produces (minus the trailing newline).
+    return len(json.dumps({"engine": "mal-floss", "findings": findings, "verdict": "UNKNOWN", "incomplete": incomplete}))
+
+
+def fit_budget(findings, incomplete):
+    # guarantee the emitted report fits the pipeline byte cap. trim from the END
+    # (keeping the summary at [0] and the earliest, highest-value strings) until it
+    # fits WITH an output-truncated marker, and flag incomplete. a bounded-but-
+    # useful report survives instead of the whole thing being rejected downstream.
+    if _report_bytes(findings, incomplete) <= MAX_TOTAL_BYTES:
+        return findings, incomplete
+    marker = finding(
+        "output-truncated",
+        "report exceeded the %d-byte pipeline budget; trailing findings omitted" % MAX_TOTAL_BYTES,
+        "UNKNOWN",
+    )
+    kept = list(findings)
+    while len(kept) > 1 and _report_bytes(kept + [marker], True) > MAX_TOTAL_BYTES:
+        kept.pop()
+    kept.append(marker)
+    return kept, True
 
 
 # fail-closed: an analysis that could not complete floors to SUSPICIOUS and is
@@ -172,7 +200,8 @@ def map_floss(static_doc, emu_doc, emu_incomplete):
             "obfuscated-string recovery did not finish within the time budget; static strings only",
             "UNKNOWN",
         ))
-    return findings, "UNKNOWN", emu_incomplete
+    findings, incomplete = fit_budget(findings, emu_incomplete)
+    return findings, "UNKNOWN", incomplete
 
 
 def selftest():
@@ -209,6 +238,14 @@ def selftest():
     f4, _, _ = map_floss({"strings": {}}, many, False)
     assert any(f["type"] == "strings-truncated" for f in f4), "silent truncation"
     assert sum(1 for f in f4 if f["type"] == "decoded-string") == MAX_STRINGS, "budget not enforced"
+
+    # a string-heavy report (each string near the per-finding cap) is trimmed to
+    # fit the pipeline BYTE budget with an output-truncated marker + incomplete,
+    # never discarded wholesale. this is what the byte budget adds atop the count.
+    heavy = {"strings": {"decoded_strings": [{"string": "A" * 7000} for _ in range(MAX_STRINGS)]}}
+    f5, _, inc5 = map_floss({"strings": {}}, heavy, False)
+    assert _report_bytes(f5, inc5) <= MAX_TOTAL_BYTES, _report_bytes(f5, inc5)
+    assert inc5 and any(f["type"] == "output-truncated" for f in f5), "missing byte-cap marker"
 
     # the fail-closed static classifier: unsupported is the only clean out;
     # every other no-output is a hard failure, never a clean/not-applicable pass.

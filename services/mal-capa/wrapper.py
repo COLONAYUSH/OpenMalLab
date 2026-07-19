@@ -33,6 +33,10 @@ CAPA = os.environ.get("MAL_CAPA_BIN", "/opt/venv/bin/capa")
 TIMEOUT = int(os.environ.get("MAL_CAPA_TIMEOUT", "210"))
 # stay well under the broker's finding cap and keep the result readable.
 MAX_FINDINGS = 400
+# hard ceiling on the WHOLE serialized report (see fit_budget): cap_detail bounds
+# each finding and MAX_FINDINGS the count, but 400 x ~8 KB can still exceed the
+# 1 MiB broker/jail cap and get the ENTIRE report discarded. headroom < 1 MiB.
+MAX_TOTAL_BYTES = 900_000
 
 # capa namespaces whose mere presence is suspicious (behavior that benign
 # software rarely needs). everything else is UNKNOWN behavioral evidence.
@@ -87,6 +91,32 @@ def finding(kind, detail, attck, verdict):
         "attck": attck[:64],
         "verdict": verdict,
     }
+
+
+def _report_bytes(findings, incomplete):
+    # conservative upper bound: assume the longest verdict token.
+    return len(json.dumps({"engine": "mal-capa", "findings": findings, "verdict": "SUSPICIOUS", "incomplete": incomplete}))
+
+
+def fit_budget(findings, incomplete):
+    # guarantee the emitted report fits the pipeline byte cap. cap_detail bounds
+    # each finding and MAX_FINDINGS the count, but 400 x ~8 KB can still exceed the
+    # 1 MiB broker/jail cap and get the WHOLE report discarded. trim from the END
+    # (keeping the summary at [0]) until it fits WITH a marker, and flag truncated -
+    # a bounded-but-useful report survives instead of being rejected downstream.
+    if _report_bytes(findings, incomplete) <= MAX_TOTAL_BYTES:
+        return findings, incomplete
+    marker = finding(
+        "output-truncated",
+        "report exceeded the %d-byte pipeline budget; trailing findings omitted" % MAX_TOTAL_BYTES,
+        "",
+        "UNKNOWN",
+    )
+    kept = list(findings)
+    while len(kept) > 1 and _report_bytes(kept + [marker], True) > MAX_TOTAL_BYTES:
+        kept.pop()
+    kept.append(marker)
+    return kept, True
 
 
 # fail-closed: an analysis that could not complete floors to SUSPICIOUS and is
@@ -195,6 +225,7 @@ def map_capa_doc(doc):
         findings.append(
             finding("capa-cap", "capability list truncated at %d entries" % MAX_FINDINGS, "", "UNKNOWN")
         )
+    findings, truncated = fit_budget(findings, truncated)
     return findings, worst, truncated
 
 
@@ -255,6 +286,14 @@ def selftest():
 
     # detail is capped by BYTES so a multibyte rule name cannot blow the broker cap.
     assert len(cap_detail("\u4e2d" * 4000).encode("utf-8")) <= 8192
+
+    # a capability-heavy report is trimmed to the pipeline BYTE budget with an
+    # output-truncated marker + truncated flag, never discarded wholesale. this is
+    # what the byte budget adds atop the per-detail and count caps.
+    heavy = {"rules": {("n%04d" % i) + "x" * 7000: {"meta": {"namespace": "communication/c2"}} for i in range(MAX_FINDINGS + 5)}}
+    hf, _, htr = map_capa_doc(heavy)
+    assert _report_bytes(hf, htr) <= MAX_TOTAL_BYTES, _report_bytes(hf, htr)
+    assert htr and any(f["type"] == "output-truncated" for f in hf), "missing byte-cap marker"
     print("mal-capa selftest ok")
 
 

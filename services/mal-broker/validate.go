@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,12 +130,25 @@ func validate(r io.Reader) ([]byte, error) {
 	}
 
 	// validated: re-encode the typed result. this, and only this, is what a
-	// trusted process reads.
-	out, err := json.Marshal(&rep)
-	if err != nil {
+	// trusted process reads. re-encode WITHOUT HTML-escaping: the default
+	// json.Marshal rewrites < > & to \u00xx (6 bytes each), so an in-cap worker
+	// report (validated <= maxInputBytes) could balloon PAST that same cap, which
+	// the orchestrator also applies to our stdout - truncating and discarding the
+	// whole report. that is a cheap, honest-path evasion: pad an archive manifest
+	// with '<'-heavy child names and the broker's own re-encoding suppresses
+	// recursion into the subtree. disabling HTML-escaping keeps the cap symmetric;
+	// the explicit output check makes it fail closed for any residual expansion
+	// (e.g. control-byte escaping) rather than silently overflowing downstream.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(&rep); err != nil { // Encode appends the trailing newline
 		return nil, fmt.Errorf("encode: %w", err)
 	}
-	return append(out, '\n'), nil
+	if buf.Len() > maxInputBytes {
+		return nil, fmt.Errorf("re-encoded output exceeds %d bytes", maxInputBytes)
+	}
+	return buf.Bytes(), nil
 }
 
 func checkStr(field, s string) error {

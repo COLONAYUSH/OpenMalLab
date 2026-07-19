@@ -52,6 +52,37 @@ func TestValidateAcceptsARealWorkerReport(t *testing.T) {
 	}
 }
 
+func TestValidateOutputStaysSymmetric(t *testing.T) {
+	// an extract manifest padded with '<'-heavy child names: default HTML-escaping
+	// (json.Marshal) would balloon each '<' to 6 bytes and push the re-encoded
+	// output past the same 1 MiB cap the orchestrator applies to our stdout,
+	// discarding the whole in-cap report and suppressing recursion into the
+	// subtree. with SetEscapeHTML(false) the output stays symmetric and survives.
+	name := strings.Repeat("<", 256)
+	kid := `{"sha256":"` + goodSHA + `","size":1,"name":"` + name + `"}`
+	kids := make([]string, 700)
+	for i := range kids {
+		kids[i] = kid
+	}
+	in := `{"engine":"mal-extract","findings":[],"children":[` + strings.Join(kids, ",") + `],"verdict":"UNKNOWN","incomplete":false}`
+	if len(in) >= 1<<20 {
+		t.Fatalf("test input must be under the input cap, got %d", len(in))
+	}
+	out, err := validate(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("an in-cap manifest was rejected (re-encode must stay symmetric): %v", err)
+	}
+	if len(out) > 1<<20 {
+		t.Fatalf("re-encoded output exceeded the 1 MiB cap: %d bytes", len(out))
+	}
+	// with escaping disabled the '<' survive verbatim; had they been escaped to a
+	// 6-byte form each, the output would have blown the cap and been rejected
+	// above. so a literal '<' present here proves the re-encode stayed symmetric.
+	if !bytes.Contains(out, []byte("<")) {
+		t.Fatal("child names not preserved verbatim: the re-encode is still HTML-escaping")
+	}
+}
+
 func TestValidateRejects(t *testing.T) {
 	cases := map[string]string{
 		"empty input":         ``,

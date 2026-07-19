@@ -36,11 +36,14 @@ import (
 // so tests can shrink it to exercise the oversize path.
 var maxIngestBytes int64 = 128 << 20
 
-// maxIngestTotalBytes bounds the SUMMED size of children one extraction can pull
-// into the shared vault. the honest extractor self-limits to 256 MiB total, but
-// a compromised one could stage up to ~1000 x 128 MiB; without an aggregate cap
-// that is ~128 GiB into the shared disk every submission depends on. generous
-// over the honest total, but bounded.
+// maxIngestTotalBytes bounds the SUMMED size of children ONE extraction can pull
+// into the shared vault. the honest extractor self-limits to 256 MiB total, but a
+// compromised one could stage up to ~1000 x 128 MiB, so this aggregate cap bounds
+// a single extraction to 512 MiB. NOTE: this is strictly PER-EXTRACTION - the
+// workflow runs up to maxArtifacts extractions with no cross-node byte budget, so
+// a branching archive can still amplify distinct writes across nodes. a
+// per-submission ingest budget threaded through SubmissionWorkflow (like
+// maxFindingsBytes) is the real fix and is tracked separately.
 const maxIngestTotalBytes int64 = 512 << 20
 
 // nobodyUID is the unprivileged uid every jailed worker runs as; the per-run
