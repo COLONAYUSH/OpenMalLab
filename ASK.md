@@ -23,9 +23,17 @@ all the way to live operation. It is maintained end-to-end.
 
 | id | what | why | placeholder | crit | status |
 |----|------|-----|-------------|------|--------|
-| LLM-1 | Local LLM served OpenAI-compatible (vLLM). Which open-weight model (design suggests Qwen/Llama-class, quantized)? | every agent's reasoning call | `MAL_MODEL_URL` (loopback), `MAL_MODEL_NAME` | LIVE | OPEN |
+| LLM-1 | Local LLM served OpenAI-compatible (vLLM/Ollama). Which open-weight model (design suggests Qwen/Llama-class, quantized)? | every agent's reasoning call | `MAL_MODEL_URL` (loopback), `MAL_MODEL_NAME` | LIVE | OPEN - plane LIVE-VALIDATED end-to-end against a real OpenAI-compatible endpoint; only the *local* model choice remains |
 | LLM-2 | Is there a GPU host for vLLM, or CPU-only? affects model size + latency budgets | sizing timeouts / model choice | n/a | LIVE | OPEN |
-| LLM-3 | (Optional) guarded **cloud** LLM adapter - provider + API key, only if a deployment opts in | cloud fallback behind egress gate | `MAL_CLOUD_MODEL_URL`, `MAL_CLOUD_MODEL_KEY` | NICE | OPEN |
+| LLM-3 | Guarded **cloud** LLM adapter - IMPLEMENTED: a non-loopback `MAL_MODEL_URL` is refused unless `MAL_ALLOW_CLOUD=1` is set, then evidence is minimized on egress (hash + paths dropped) and TLS uses the OS trust store | cloud fallback behind the egress gate | `MAL_MODEL_URL` (non-loopback) + `MAL_MODEL_KEY` + `MAL_ALLOW_CLOUD=1` | NICE | PROVIDED - a test key was supplied out-of-band for live validation; not stored in-repo |
+
+> **Live validation done.** The full nine-agent roster, both HTTP endpoints
+> (`/v1/analyze`, `/v1/agent/{name}`), and the Go orchestrator seam
+> (`RunRosterActivity` -> gate) have all been run end-to-end against a real
+> OpenAI-compatible model. To reproduce: set `MAL_MODEL_URL` / `MAL_MODEL_NAME` /
+> `MAL_MODEL_KEY` / `MAL_ALLOW_CLOUD=1`, run `uvicorn malagents.app:app`, then
+> `MAL_LIVE_ROSTER_URL=<url> go test -run TestLiveRosterSeam ./services/mal-orchestrator/`.
+> The offline default (TestModel + gate mocks) still exercises everything with zero egress.
 
 ## 2. Embeddings (for L2 semantic / GraphRAG novelty fallback)
 
