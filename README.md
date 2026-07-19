@@ -88,6 +88,11 @@ curl -s -F "file=@/path/to/sample" http://localhost:8080/v1/submissions
 curl -s http://localhost:8080/v1/submissions/sub-xxxxxxxx | jq
 ```
 
+Want the **whole platform live** - the deterministic engines plus the AI-analyst
+plane with a local, air-gapped model - in one command? `make live` (see
+[`deploy/RUNBOOK.md`](deploy/RUNBOOK.md)), then `make e2e-live` to prove the full
+submit -> verdict -> AI enrichment -> human-review loop.
+
 A real round-trip, from the end-to-end proof (`deploy/proof/e2e.sh`):
 
 ```jsonc
