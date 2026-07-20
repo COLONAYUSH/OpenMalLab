@@ -11,6 +11,10 @@
 //     indicator.
 //   - only regular files become children. symlinks, hardlinks, devices, and
 //     directories are skipped and flagged; we never create them.
+//   - the manifest itself is bounded: findings are capped below the broker's
+//     limit, so an archive stuffed with thousands of flaggable entries cannot
+//     inflate our own report past the trust boundary's caps and get the real
+//     children thrown away along with it.
 //   - recursion (a zip in a zip) is the orchestrator's job: this worker does
 //     exactly one level and reports the children, so depth and total-artifact
 //     caps live in the durable workflow, not in a jailed process.
@@ -84,6 +88,14 @@ const MALICIOUS: &str = "MALICIOUS";
 const SUSPICIOUS: &str = "SUSPICIOUS";
 const UNKNOWN: &str = "UNKNOWN";
 
+// the broker rejects any report with more than 1000 findings, so a hostile
+// archive holding thousands of flaggable entries (symlinks, traversal names)
+// must not be able to balloon our own manifest past the boundary's cap and get
+// the whole report, real children included, thrown away. that would be a cheap
+// honest-path evasion: bury the payload under a flag storm. keep one slot in
+// reserve for the summary marker that says the list was cut.
+const MAX_DETAIL_FINDINGS: usize = 999;
+
 fn rank(v: &str) -> i32 {
     match v {
         MALICIOUS => 3,
@@ -94,10 +106,14 @@ fn rank(v: &str) -> i32 {
 }
 
 // why a capped copy stopped, so the caller can decide "skip this entry" (too
-// big) versus "stop everything" (total budget spent, i.e. a bomb).
+// big), "stop everything" (total budget spent, i.e. a bomb), or "this entry's
+// stream is broken" (corrupt or truncated data, a failed stage write). the io
+// case used to be folded into Entry, which reported a corrupt entry as
+// "too large" - wrong telemetry for the analyst reading the findings.
 enum CapHit {
     Entry,
     Total,
+    Io,
 }
 
 struct Extractor {
@@ -108,6 +124,7 @@ struct Extractor {
     seen: HashSet<String>,
     children: Vec<Child>,
     findings: Vec<Finding>,
+    findings_capped: bool,
     incomplete: bool,
     worst: &'static str,
 }
@@ -122,22 +139,40 @@ impl Extractor {
             seen: HashSet::new(),
             children: Vec::new(),
             findings: Vec::new(),
+            findings_capped: false,
             incomplete: false,
             worst: UNKNOWN,
         }
     }
 
     fn note(&mut self, kind: &str, detail: &str, verdict: &'static str) {
+        // the verdict always counts toward the lattice, even when the finding
+        // list itself is full: suppressing text must never soften the verdict.
         if rank(verdict) > rank(self.worst) {
             self.worst = verdict;
         }
-        self.findings.push(Finding {
-            engine: "mal-extract".into(),
-            kind: kind.into(),
-            detail: sanitize(detail),
-            attck: String::new(),
-            verdict: verdict.into(),
-        });
+        if self.findings.len() < MAX_DETAIL_FINDINGS {
+            self.findings.push(Finding {
+                engine: "mal-extract".into(),
+                kind: kind.into(),
+                detail: sanitize(detail),
+                attck: String::new(),
+                verdict: verdict.into(),
+            });
+        } else if !self.findings_capped {
+            self.findings_capped = true;
+            self.incomplete = true;
+            if rank(SUSPICIOUS) > rank(self.worst) {
+                self.worst = SUSPICIOUS;
+            }
+            self.findings.push(Finding {
+                engine: "mal-extract".into(),
+                kind: "findings-cap-hit".into(),
+                detail: "finding count cap reached; further indicators suppressed".into(),
+                attck: String::new(),
+                verdict: SUSPICIOUS.into(),
+            });
+        }
     }
 
     // stream a reader into a content-addressed child file, hashing as we go and
@@ -147,7 +182,7 @@ impl Extractor {
     fn copy_capped<R: Read>(&mut self, mut r: R, tmp: &Path) -> Result<(u64, String), CapHit> {
         let mut f = match File::create(tmp) {
             Ok(f) => f,
-            Err(_) => return Err(CapHit::Entry),
+            Err(_) => return Err(CapHit::Io),
         };
         let mut hasher = Sha256::new();
         let mut buf = [0u8; 8192];
@@ -158,7 +193,7 @@ impl Extractor {
                 Ok(n) => n,
                 Err(_) => {
                     let _ = std::fs::remove_file(tmp);
-                    return Err(CapHit::Entry);
+                    return Err(CapHit::Io);
                 }
             };
             if written + n as u64 > self.caps.max_entry {
@@ -171,7 +206,7 @@ impl Extractor {
             }
             if f.write_all(&buf[..n]).is_err() {
                 let _ = std::fs::remove_file(tmp);
-                return Err(CapHit::Entry);
+                return Err(CapHit::Io);
             }
             hasher.update(&buf[..n]);
             written += n as u64;
@@ -181,8 +216,11 @@ impl Extractor {
     }
 
     // one regular-file entry -> one content-addressed child. returns false when
-    // the total budget is spent and extraction must stop.
-    fn take_entry<R: Read>(&mut self, raw_name: &str, reader: R) -> bool {
+    // the total budget is spent and extraction must stop. declared is the size
+    // the archive header promised, when the format states one: a tar whose data
+    // area ends early yields a silently short read (io::Take reports plain EOF),
+    // so without this check a truncated archive would pass as a complete child.
+    fn take_entry<R: Read>(&mut self, raw_name: &str, reader: R, declared: Option<u64>) -> bool {
         if self.children.len() >= self.caps.max_children {
             self.incomplete = true;
             self.note(
@@ -198,6 +236,16 @@ impl Extractor {
         match self.copy_capped(reader, &tmp) {
             Ok((size, sha)) => {
                 self.total_out += size;
+                if let Some(d) = declared {
+                    if size != d {
+                        self.incomplete = true;
+                        self.note(
+                            "entry-truncated",
+                            &format!("entry '{raw_name}' declared {d} bytes but yielded {size}"),
+                            SUSPICIOUS,
+                        );
+                    }
+                }
                 if self.seen.insert(sha.clone()) {
                     let dst = self.out.join(&sha);
                     if std::fs::rename(&tmp, &dst).is_err() {
@@ -226,6 +274,18 @@ impl Extractor {
                 );
                 true
             }
+            Err(CapHit::Io) => {
+                self.incomplete = true;
+                self.note(
+                    "entry-unreadable",
+                    &format!(
+                        "entry '{}' could not be read or staged (corrupt, truncated, or a failed write); skipped",
+                        raw_name
+                    ),
+                    SUSPICIOUS,
+                );
+                true
+            }
             Err(CapHit::Total) => {
                 self.incomplete = true;
                 self.note(
@@ -241,11 +301,19 @@ impl Extractor {
     fn extract_zip(&mut self, path: &Path) {
         let file = match File::open(path) {
             Ok(f) => f,
-            Err(e) => return self.note("extraction-error", &format!("open: {e}"), SUSPICIOUS),
+            Err(e) => {
+                // fail closed: a container we could not even open is an
+                // incomplete analysis, never a quiet no-op.
+                self.incomplete = true;
+                return self.note("extraction-error", &format!("open: {e}"), SUSPICIOUS);
+            }
         };
         let mut zip = match zip::ZipArchive::new(file) {
             Ok(z) => z,
-            Err(e) => return self.note("extraction-error", &format!("bad zip: {e}"), SUSPICIOUS),
+            Err(e) => {
+                self.incomplete = true;
+                return self.note("extraction-error", &format!("bad zip: {e}"), SUSPICIOUS);
+            }
         };
         self.note("archive", "zip", UNKNOWN);
         let count = zip.len().min(self.caps.max_entries);
@@ -269,8 +337,8 @@ impl Extractor {
             if entry.is_dir() {
                 continue;
             }
-            if let Some(mode) = entry.unix_mode() {
-                if mode & 0o170000 == 0o120000 {
+            match zip_kind(entry.unix_mode()) {
+                ZipKind::Symlink => {
                     self.note(
                         "skipped-symlink",
                         &format!("symlink entry '{name}' skipped"),
@@ -278,8 +346,19 @@ impl Extractor {
                     );
                     continue;
                 }
+                ZipKind::Special => {
+                    self.note(
+                        "skipped-special",
+                        &format!("non-regular entry '{name}' skipped"),
+                        SUSPICIOUS,
+                    );
+                    continue;
+                }
+                ZipKind::Regular => {}
             }
-            if !self.take_entry(&name, entry) {
+            // no declared size: the zip reader crc-checks the stream itself and
+            // errors on short or corrupt data.
+            if !self.take_entry(&name, entry, None) {
                 break;
             }
         }
@@ -290,7 +369,10 @@ impl Extractor {
         ar.set_ignore_zeros(true);
         let entries = match ar.entries() {
             Ok(e) => e,
-            Err(e) => return self.note("extraction-error", &format!("bad tar: {e}"), SUSPICIOUS),
+            Err(e) => {
+                self.incomplete = true;
+                return self.note("extraction-error", &format!("bad tar: {e}"), SUSPICIOUS);
+            }
         };
         self.note("archive", "tar", UNKNOWN);
         let mut n = 0usize;
@@ -336,7 +418,10 @@ impl Extractor {
                 );
                 continue;
             }
-            if !self.take_entry(&name, entry) {
+            // the header's declared size lets take_entry catch a truncated
+            // data area, which tar reads as a silent early EOF.
+            let declared = entry.size();
+            if !self.take_entry(&name, entry, Some(declared)) {
                 break;
             }
         }
@@ -346,16 +431,18 @@ impl Extractor {
         // peek at the decompressed head: a gzip that wraps a tar is a tar.gz and
         // we stream its entries; anything else is a single gzipped member.
         let mut head = [0u8; 512];
-        let n = File::open(path)
-            .ok()
-            .map(|f| flate2::read::GzDecoder::new(f))
-            .and_then(|mut d| d.read(&mut head).ok())
-            .unwrap_or(0);
+        let n = match File::open(path) {
+            Ok(f) => read_head(flate2::read::GzDecoder::new(f), &mut head),
+            Err(_) => 0,
+        };
         let is_tar = n >= 262 && &head[257..262] == b"ustar";
 
         let file = match File::open(path) {
             Ok(f) => f,
-            Err(e) => return self.note("extraction-error", &format!("open: {e}"), SUSPICIOUS),
+            Err(e) => {
+                self.incomplete = true;
+                return self.note("extraction-error", &format!("open: {e}"), SUSPICIOUS);
+            }
         };
         let gz = flate2::read::GzDecoder::new(file);
         if is_tar {
@@ -363,7 +450,7 @@ impl Extractor {
             self.extract_tar(gz);
         } else {
             self.note("archive", "gzip", UNKNOWN);
-            self.take_entry("gunzipped", gz);
+            self.take_entry("gunzipped", gz, None);
         }
     }
 
@@ -375,6 +462,39 @@ impl Extractor {
             verdict: self.worst.into(),
             incomplete: self.incomplete,
         }
+    }
+}
+
+// read up to buf.len() head bytes, looping because a single read() call may
+// legitimately return short (decompressors often do) and a short peek would
+// misclassify a tar.gz as a plain gzip member.
+fn read_head<R: Read>(mut r: R, buf: &mut [u8]) -> usize {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) | Err(_) => break,
+            Ok(k) => n += k,
+        }
+    }
+    n
+}
+
+// how a zip entry's unix mode bits say it should be handled. zip has no
+// hardlinks; symlinks and the device/fifo/socket family are never followed or
+// created, only flagged. absent, zero, or unrecognized mode bits read as a
+// regular file, because plenty of real-world (windows-made) zips carry garbage
+// there and their bytes are still worth extracting as inert data.
+enum ZipKind {
+    Regular,
+    Symlink,
+    Special,
+}
+
+fn zip_kind(mode: Option<u32>) -> ZipKind {
+    match mode.map(|m| m & 0o170000) {
+        Some(0o120000) => ZipKind::Symlink,
+        Some(0o010000) | Some(0o020000) | Some(0o060000) | Some(0o140000) => ZipKind::Special,
+        _ => ZipKind::Regular,
     }
 }
 
@@ -398,7 +518,7 @@ fn detect_and_extract(path: &Path, out: &Path, caps: Caps) -> Report {
     let input_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut head = [0u8; 264];
     let n = File::open(path)
-        .and_then(|mut f| f.read(&mut head))
+        .map(|f| read_head(f, &mut head))
         .unwrap_or(0);
     let head = &head[..n];
 
@@ -479,13 +599,28 @@ fn sanitize(s: &str) -> String {
     const MAX_BYTES: usize = 256;
     let mut out = String::with_capacity(MAX_BYTES.min(s.len()));
     for c in s.chars() {
-        let c = if c.is_control() { '.' } else { c };
+        let c = if c.is_control() || is_bidi_control(c) {
+            '.'
+        } else {
+            c
+        };
         if out.len() + c.len_utf8() > MAX_BYTES {
             break;
         }
         out.push(c);
     }
     out
+}
+
+// bidi override and isolate characters reorder rendered text: the classic
+// "invoice_exe.gpj" that displays as "invoice_gpj.exe". they are format (Cf)
+// codepoints, so is_control() alone does not catch them, and a display-only
+// entry name has no business steering the reader's text direction.
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -696,5 +831,498 @@ mod tests {
         assert!(rep.incomplete);
         assert!(rep.findings.iter().any(|f| f.kind == "entry-count-cap"));
         assert!(rep.children.len() <= 10);
+    }
+
+    // ---- helpers for building hostile tars in memory ----
+
+    fn tar_bytes(build: impl FnOnce(&mut tar::Builder<Vec<u8>>)) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        build(&mut b);
+        b.into_inner().unwrap()
+    }
+
+    fn tar_file(b: &mut tar::Builder<Vec<u8>>, name: &str, data: &[u8]) {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(data.len() as u64);
+        h.set_mode(0o644);
+        b.append_data(&mut h, name, data).unwrap();
+    }
+
+    fn tar_special(
+        b: &mut tar::Builder<Vec<u8>>,
+        t: tar::EntryType,
+        name: &str,
+        link: Option<&str>,
+    ) {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(t);
+        h.set_size(0);
+        h.set_mode(0o644);
+        if let Some(l) = link {
+            h.set_link_name(l).unwrap();
+        }
+        let _ = h.set_device_major(0);
+        let _ = h.set_device_minor(0);
+        b.append_data(&mut h, name, std::io::empty()).unwrap();
+    }
+
+    fn gz_bytes(data: &[u8]) -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    fn sha_of(data: &[u8]) -> String {
+        hex(&Sha256::digest(data))
+    }
+
+    // ---- nested bombs stay inert at this level ----
+
+    #[test]
+    fn nested_zip_bomb_is_not_expanded_at_this_level() {
+        // a zip whose only child is itself a bomb zip: one level means the
+        // inner archive crosses as an inert blob, so even a total cap far
+        // smaller than the nested payload must not trip.
+        let inner = zip_with(&[("zeros", &vec![0u8; 8 << 20])]);
+        let outer = zip_with(&[("inner.zip", &inner)]);
+        let caps = Caps {
+            max_total: 1 << 20,
+            ..Caps::default()
+        };
+        let (rep, out) = run(&outer, caps);
+        assert_eq!(rep.children.len(), 1);
+        assert!(
+            !rep.incomplete,
+            "level one must not expand the nested payload"
+        );
+        assert!(rep
+            .findings
+            .iter()
+            .all(|f| f.kind != "decompression-bomb" && f.kind != "high-compression-ratio"));
+        assert_eq!(rep.children[0].sha256, sha_of(&inner));
+        assert_eq!(rep.children[0].size, inner.len() as u64);
+        assert!(out.join(&rep.children[0].sha256).exists());
+    }
+
+    #[test]
+    fn nested_gzip_member_is_extracted_one_level() {
+        let inner_gz = gz_bytes(&vec![0u8; 4 << 20]);
+        let outer_gz = gz_bytes(&inner_gz);
+        let (rep, _out) = run(&outer_gz, Caps::default());
+        assert_eq!(rep.children.len(), 1);
+        assert_eq!(rep.children[0].sha256, sha_of(&inner_gz));
+        assert!(rep
+            .findings
+            .iter()
+            .all(|f| f.kind != "decompression-bomb" && f.kind != "high-compression-ratio"));
+    }
+
+    #[test]
+    fn gzip_bomb_streams_into_the_entry_cap() {
+        let gz = gz_bytes(&vec![0u8; 8 << 20]);
+        let caps = Caps {
+            max_entry: 256 << 10,
+            ..Caps::default()
+        };
+        let (rep, out) = run(&gz, caps);
+        assert!(rep.incomplete);
+        assert!(rep.children.is_empty());
+        assert!(rep.findings.iter().any(|f| f.kind == "entry-too-large"));
+        assert_eq!(rep.verdict, "SUSPICIOUS");
+        // nothing materialized: the partial staging file is gone too.
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn compression_ratio_flag_fires_even_under_the_absolute_caps() {
+        // 4 MiB of zeros deflates to a few KiB: the extraction finishes well
+        // inside the absolute caps, but the expansion ratio alone must read as
+        // a bomb indicator and mark the analysis incomplete.
+        let z = zip_with(&[("zeros", &vec![0u8; 4 << 20])]);
+        let (rep, _out) = run(&z, Caps::default());
+        assert_eq!(rep.children.len(), 1);
+        assert!(rep.incomplete);
+        assert!(rep
+            .findings
+            .iter()
+            .any(|f| f.kind == "high-compression-ratio" && f.verdict == "SUSPICIOUS"));
+        assert_eq!(rep.verdict, "SUSPICIOUS");
+    }
+
+    // ---- caps hold exactly at their boundaries ----
+
+    #[test]
+    fn per_entry_cap_boundary_exact_fits_one_over_skips() {
+        let exact = vec![7u8; 4096];
+        let over = vec![8u8; 4097];
+        let z = zip_with(&[("exact", &exact), ("over", &over)]);
+        let caps = Caps {
+            max_entry: 4096,
+            ..Caps::default()
+        };
+        let (rep, _out) = run(&z, caps);
+        assert_eq!(rep.children.len(), 1);
+        assert_eq!(rep.children[0].name, "exact");
+        assert_eq!(rep.children[0].size, 4096);
+        assert!(rep.incomplete);
+        assert!(rep.findings.iter().any(|f| f.kind == "entry-too-large"));
+    }
+
+    #[test]
+    fn total_cap_boundary_exact_fits_one_more_byte_bombs() {
+        let a = vec![1u8; 4096];
+        let b_ok = vec![2u8; 4096];
+        let b_over = vec![2u8; 4097];
+        let caps = Caps {
+            max_total: 8192,
+            ..Caps::default()
+        };
+        let (rep, _out) = run(&zip_with(&[("a", &a), ("b", &b_ok)]), caps);
+        assert_eq!(rep.children.len(), 2);
+        assert!(!rep.incomplete, "summing exactly to the cap is not a bomb");
+        let (rep, _out) = run(&zip_with(&[("a", &a), ("b", &b_over)]), caps);
+        assert_eq!(rep.children.len(), 1);
+        assert!(rep.incomplete);
+        assert!(rep.findings.iter().any(|f| f.kind == "decompression-bomb"));
+        assert_eq!(rep.verdict, "SUSPICIOUS");
+    }
+
+    #[test]
+    fn entry_count_cap_boundary_zip_and_tar() {
+        let caps = Caps {
+            max_entries: 3,
+            ..Caps::default()
+        };
+        let z3 = zip_with(&[("a", b"1"), ("b", b"2"), ("c", b"3")]);
+        let (rep, _out) = run(&z3, caps);
+        assert!(!rep.incomplete, "exactly at the entry cap is complete");
+        assert_eq!(rep.children.len(), 3);
+        let z4 = zip_with(&[("a", b"1"), ("b", b"2"), ("c", b"3"), ("d", b"4")]);
+        let (rep, _out) = run(&z4, caps);
+        assert!(rep.incomplete);
+        assert!(rep.findings.iter().any(|f| f.kind == "entry-count-cap"));
+        assert!(rep.children.len() <= 3);
+
+        let t3 = tar_bytes(|b| {
+            tar_file(b, "a", b"1");
+            tar_file(b, "b", b"2");
+            tar_file(b, "c", b"3");
+        });
+        let (rep, _out) = run(&t3, caps);
+        assert!(!rep.incomplete);
+        assert_eq!(rep.children.len(), 3);
+        let t4 = tar_bytes(|b| {
+            tar_file(b, "a", b"1");
+            tar_file(b, "b", b"2");
+            tar_file(b, "c", b"3");
+            tar_file(b, "d", b"4");
+        });
+        let (rep, _out) = run(&t4, caps);
+        assert!(rep.incomplete);
+        assert!(rep.findings.iter().any(|f| f.kind == "entry-count-cap"));
+        assert!(rep.children.len() <= 3);
+    }
+
+    #[test]
+    fn child_count_cap_boundary() {
+        let caps = Caps {
+            max_children: 2,
+            ..Caps::default()
+        };
+        let (rep, _out) = run(&zip_with(&[("a", b"1"), ("b", b"2")]), caps);
+        assert_eq!(rep.children.len(), 2);
+        assert!(!rep.incomplete, "exactly at the child cap is complete");
+        let (rep, _out) = run(&zip_with(&[("a", b"1"), ("b", b"2"), ("c", b"3")]), caps);
+        assert_eq!(rep.children.len(), 2);
+        assert!(rep.incomplete);
+        assert!(rep.findings.iter().any(|f| f.kind == "extraction-cap-hit"));
+    }
+
+    // ---- special entries are flagged, skipped, never followed or created ----
+
+    #[test]
+    fn tar_special_entries_are_flagged_skipped_never_created() {
+        let t = tar_bytes(|b| {
+            tar_file(b, "real.bin", b"the only real child");
+            tar_special(b, tar::EntryType::Symlink, "sym", Some("/etc/passwd"));
+            tar_special(b, tar::EntryType::Link, "hard", Some("real.bin"));
+            tar_special(b, tar::EntryType::Char, "cdev", None);
+            tar_special(b, tar::EntryType::Block, "bdev", None);
+            tar_special(b, tar::EntryType::Fifo, "pipe", None);
+            tar_special(b, tar::EntryType::Directory, "d", None);
+        });
+        let (rep, out) = run(&t, Caps::default());
+        assert_eq!(rep.children.len(), 1);
+        assert_eq!(rep.children[0].name, "real.bin");
+        let links = rep
+            .findings
+            .iter()
+            .filter(|f| f.kind == "skipped-link")
+            .count();
+        assert_eq!(links, 2, "symlink and hardlink both flagged");
+        let specials = rep
+            .findings
+            .iter()
+            .filter(|f| f.kind == "skipped-special")
+            .count();
+        assert_eq!(specials, 3, "char, block, and fifo all flagged");
+        assert_eq!(rep.verdict, "SUSPICIOUS");
+        // on disk: exactly one staged file named by hash; no link, device, or
+        // directory was ever created, let alone followed.
+        let staged: Vec<_> = std::fs::read_dir(&out)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].file_name().to_string_lossy().len(), 64);
+        let md = std::fs::symlink_metadata(staged[0].path()).unwrap();
+        assert!(md.is_file() && !md.is_symlink());
+        for name in ["sym", "hard", "cdev", "bdev", "pipe", "d"] {
+            assert!(!out.join(name).exists(), "{name} must never be created");
+        }
+    }
+
+    #[test]
+    fn zip_symlink_entry_is_flagged_and_skipped() {
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let opts = SimpleFileOptions::default();
+            w.start_file("real.txt", opts).unwrap();
+            w.write_all(b"real bytes").unwrap();
+            w.add_symlink("innocent.txt", "/etc/shadow", opts).unwrap();
+            w.finish().unwrap();
+        }
+        let (rep, out) = run(&buf, Caps::default());
+        assert_eq!(rep.children.len(), 1);
+        assert_eq!(rep.children[0].name, "real.txt");
+        assert!(rep
+            .findings
+            .iter()
+            .any(|f| f.kind == "skipped-symlink" && f.verdict == "SUSPICIOUS"));
+        assert_eq!(rep.verdict, "SUSPICIOUS");
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn zip_kind_classifies_the_mode_family() {
+        assert!(matches!(zip_kind(None), ZipKind::Regular));
+        assert!(matches!(zip_kind(Some(0)), ZipKind::Regular));
+        assert!(matches!(zip_kind(Some(0o644)), ZipKind::Regular));
+        assert!(matches!(zip_kind(Some(0o100644)), ZipKind::Regular));
+        assert!(matches!(zip_kind(Some(0o120777)), ZipKind::Symlink));
+        assert!(matches!(zip_kind(Some(0o010644)), ZipKind::Special)); // fifo
+        assert!(matches!(zip_kind(Some(0o020644)), ZipKind::Special)); // char dev
+        assert!(matches!(zip_kind(Some(0o060644)), ZipKind::Special)); // block dev
+        assert!(matches!(zip_kind(Some(0o140644)), ZipKind::Special)); // socket
+    }
+
+    // ---- truncated and corrupt archives fail closed, never panic ----
+
+    #[test]
+    fn truncated_zip_fails_closed() {
+        let z = zip_with(&[("a.txt", b"hello"), ("b.txt", b"world")]);
+        let cut = &z[..z.len() / 2];
+        let (rep, _out) = run(cut, Caps::default());
+        assert!(rep.children.is_empty());
+        assert!(
+            rep.incomplete,
+            "a container we could not walk is incomplete"
+        );
+        assert!(rep.findings.iter().any(|f| f.kind == "extraction-error"));
+        assert_eq!(rep.verdict, "SUSPICIOUS");
+    }
+
+    #[test]
+    fn corrupt_zip_entry_data_is_skipped_and_flagged() {
+        let payload: Vec<u8> = (0..4096u32).map(|i| (i * 31 % 251) as u8).collect();
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let opts =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            w.start_file("c", opts).unwrap();
+            w.write_all(&payload).unwrap();
+            w.finish().unwrap();
+        }
+        // flip a byte inside the stored payload, leaving headers and the
+        // central directory intact: the crc check must catch it.
+        buf[600] ^= 0xff;
+        let (rep, out) = run(&buf, Caps::default());
+        assert!(rep.incomplete);
+        assert!(
+            rep.findings.iter().any(|f| f.kind == "entry-unreadable"),
+            "corrupt data must read as unreadable, not as too large: {:?}",
+            rep.findings.iter().map(|f| &f.kind).collect::<Vec<_>>()
+        );
+        assert!(rep.children.is_empty());
+        assert_eq!(rep.verdict, "SUSPICIOUS");
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn truncated_tar_data_is_flagged_never_silently_short() {
+        let t = tar_bytes(|b| tar_file(b, "big.bin", &vec![9u8; 4096]));
+        let cut = &t[..700]; // header (512) plus 188 bytes of a 4096-byte body
+        let (rep, _out) = run(cut, Caps::default());
+        assert!(rep.incomplete);
+        assert!(
+            rep.findings
+                .iter()
+                .any(|f| f.kind == "entry-truncated" || f.kind == "entry-unreadable"),
+            "truncation must surface: {:?}",
+            rep.findings.iter().map(|f| &f.kind).collect::<Vec<_>>()
+        );
+        assert_eq!(rep.verdict, "SUSPICIOUS");
+        // if the short bytes were kept as a child, the child must carry the
+        // real (shorter) size, never the declared one.
+        for c in &rep.children {
+            assert!(c.size < 4096);
+        }
+    }
+
+    #[test]
+    fn truncated_gzip_fails_closed() {
+        let gz = gz_bytes(&vec![7u8; 100_000]);
+        let cut = &gz[..gz.len() / 2];
+        let (rep, out) = run(cut, Caps::default());
+        assert!(rep.incomplete);
+        assert!(rep.children.is_empty());
+        assert!(rep.findings.iter().any(|f| f.kind == "entry-unreadable"));
+        assert_eq!(rep.verdict, "SUSPICIOUS");
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn empty_zip_is_complete_and_childless() {
+        let z = zip_with(&[]);
+        let (rep, _out) = run(&z, Caps::default());
+        assert!(rep.children.is_empty());
+        assert!(!rep.incomplete);
+        assert_eq!(rep.verdict, "UNKNOWN");
+        assert!(rep.findings.iter().any(|f| f.kind == "archive"));
+    }
+
+    // ---- the manifest itself stays inside the broker's contract ----
+
+    #[test]
+    fn findings_are_capped_below_the_broker_limit() {
+        // 1200 symlink entries would produce 1200 findings and get the whole
+        // manifest, real children included, rejected at the trust boundary.
+        let t = tar_bytes(|b| {
+            tar_file(b, "real.bin", b"payload");
+            for i in 0..1200 {
+                tar_special(
+                    b,
+                    tar::EntryType::Symlink,
+                    &format!("s{i}"),
+                    Some("/etc/passwd"),
+                );
+            }
+        });
+        let (rep, _out) = run(&t, Caps::default());
+        assert!(
+            rep.findings.len() <= 1000,
+            "got {} findings",
+            rep.findings.len()
+        );
+        assert!(rep.findings.iter().any(|f| f.kind == "findings-cap-hit"));
+        assert!(rep.incomplete);
+        assert_eq!(
+            rep.children.len(),
+            1,
+            "the real child must survive the flag storm"
+        );
+        assert_eq!(rep.verdict, "SUSPICIOUS");
+        let manifest = serde_json::to_vec(&rep).unwrap();
+        assert!(
+            manifest.len() <= 1 << 20,
+            "manifest must fit the broker's input cap, got {} bytes",
+            manifest.len()
+        );
+    }
+
+    #[test]
+    fn worst_case_manifest_fits_the_broker_contract() {
+        // the absolute worst report we can emit under our own caps: max
+        // children with max-length names, max findings with max-length details.
+        // it must fit the broker's 1 MiB input cap with room to spare.
+        let name = "n".repeat(256);
+        let detail = "d".repeat(256);
+        let rep = Report {
+            engine: "mal-extract".into(),
+            findings: (0..1000)
+                .map(|_| Finding {
+                    engine: "mal-extract".into(),
+                    kind: "path-traversal-name".into(),
+                    detail: detail.clone(),
+                    attck: String::new(),
+                    verdict: SUSPICIOUS.into(),
+                })
+                .collect(),
+            children: (0..1000)
+                .map(|i| Child {
+                    sha256: format!("{i:064x}"),
+                    size: u64::MAX,
+                    name: name.clone(),
+                })
+                .collect(),
+            verdict: SUSPICIOUS.into(),
+            incomplete: true,
+        };
+        let bytes = serde_json::to_vec(&rep).unwrap();
+        assert!(
+            bytes.len() <= 1 << 20,
+            "worst-case manifest is {} bytes, past the broker cap",
+            bytes.len()
+        );
+    }
+
+    // ---- display-name sanitizing: bidi, boundaries ----
+
+    #[test]
+    fn sanitize_neutralizes_bidi_controls() {
+        assert_eq!(sanitize("invoice\u{202e}gpj.exe"), "invoice.gpj.exe");
+        assert_eq!(
+            sanitize("a\u{202a}b\u{202b}c\u{202c}d\u{202d}e"),
+            "a.b.c.d.e"
+        );
+        assert_eq!(sanitize("x\u{2066}y\u{2069}z"), "x.y.z");
+        assert_eq!(sanitize("l\u{200e}r\u{200f}m\u{061c}n"), "l.r.m.n");
+        // ordinary multibyte text is untouched.
+        assert_eq!(sanitize("\u{4e2d}\u{6587}.exe"), "\u{4e2d}\u{6587}.exe");
+        assert_eq!(sanitize("emoji\u{1f600}.bin"), "emoji\u{1f600}.bin");
+    }
+
+    #[test]
+    fn sanitize_exact_byte_boundary_with_multibyte() {
+        // 64 four-byte chars fill the 256-byte budget exactly.
+        let exact = "\u{1f600}".repeat(64);
+        let out = sanitize(&exact);
+        assert_eq!(out.len(), 256);
+        assert_eq!(out.chars().count(), 64);
+        // one more char of any width must stop cleanly at the boundary.
+        let over = "\u{1f600}".repeat(65);
+        let out = sanitize(&over);
+        assert_eq!(out.len(), 256);
+        // ascii after 63 four-byte chars: 252 + 4 singles = 256, fifth breaks.
+        let mixed = "\u{1f600}".repeat(63) + "abcde";
+        let out = sanitize(&mixed);
+        assert_eq!(out.len(), 256);
+        assert!(out.ends_with("abcd"));
+    }
+
+    #[test]
+    fn gzip_with_trailing_garbage_still_yields_the_member() {
+        // a single-member gzip with junk appended: the decoder stops at the
+        // member boundary and the child is the member, not the junk.
+        let payload = b"member payload";
+        let mut gz = gz_bytes(payload);
+        gz.extend_from_slice(b"TRAILING GARBAGE");
+        let (rep, _out) = run(&gz, Caps::default());
+        assert_eq!(rep.children.len(), 1);
+        assert_eq!(rep.children[0].sha256, sha_of(payload));
     }
 }
