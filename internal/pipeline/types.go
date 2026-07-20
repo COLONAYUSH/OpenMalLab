@@ -164,7 +164,11 @@ func ConfidenceFor(engine, findingType string, v Verdict) Confidence {
 	case "error", "recursion-cap", "ingest-rejected", "extraction-cap-hit",
 		"decompression-bomb", "high-compression-ratio", "entry-too-large",
 		"entry-count-cap", "skipped-symlink", "skipped-link", "skipped-special",
-		"path-traversal-name":
+		"path-traversal-name",
+		// a detonation timeout is a fail-closed GAP (we stopped observing), not a
+		// detection: incomplete already floors severity to SUSPICIOUS, so like every
+		// other gap it must stay LOW confidence and NOT inflate the triage score.
+		"detonation-timeout":
 		return ConfLow
 	}
 	// a yara signature match is a definitive identification.
@@ -179,7 +183,10 @@ func ConfidenceFor(engine, findingType string, v Verdict) Confidence {
 	}
 	// mal-detonate reports OBSERVED runtime behavior: strong signal, but still
 	// behavioral inference (and emulated), so medium at most, same tier as capa.
-	// its UNKNOWN summaries, timeouts, and errors fall through to LOW below.
+	// its gap/non-detection types stay LOW (the SUSPICIOUS detonation-timeout is
+	// caught by the gap switch above; UNKNOWN summaries/errors fall to the branch
+	// below); only a genuine observed behavior (net-connect, persistence, exec)
+	// reaches here as SUSPICIOUS.
 	if engine == "mal-detonate" && v >= Suspicious {
 		return ConfMedium
 	}

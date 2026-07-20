@@ -213,6 +213,18 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 		// does, so a deep nest is never silently reported clean. this is the
 		// counterpart to the maxArtifacts branch above: report the truncation,
 		// never quietly stop.
+		//
+		// extraction is the ONLY vault-WRITE path, so once the per-submission ingest
+		// budget has tripped we stop dispatching it. otherwise every remaining queued
+		// node would still write up to another per-extraction cap into the shared
+		// vault, bounding total writes by maxArtifacts x that cap (~100 GiB) rather
+		// than the submission budget the comment above promises. the read-only engines
+		// already ran on this node; cutting only the writing step bounds total vault
+		// writes to about the budget plus the single in-flight extraction that tripped
+		// the cap.
+		if ingestCapped {
+			continue
+		}
 		extractF := workflow.ExecuteActivity(ctx, a.ExtractActivity, artifact)
 		extractRep, ok := fold(item.Path, "mal-extract", extractF)
 		if ok {
@@ -229,7 +241,7 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 					res.Findings = append(res.Findings, pipeline.Finding{
 						Engine:     "mal-orchestrator",
 						Type:       "ingest-cap",
-						Detail:     "per-submission extracted-bytes budget reached; deeper children were not analyzed",
+						Detail:     "per-submission extracted-bytes budget reached; further extraction was halted",
 						Verdict:    pipeline.Suspicious,
 						Confidence: pipeline.ConfLow,
 						Path:       item.Path,

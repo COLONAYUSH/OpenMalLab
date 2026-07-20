@@ -127,6 +127,17 @@ def detect_arch(path):
     return EM_MACHINE.get(e_machine)
 
 
+def is_elf(path):
+    # true if the file starts with the ELF magic, regardless of arch/bitness. used to
+    # tell a real-but-unsupported-arch ELF (a fail-closed GAP) apart from a genuine
+    # non-ELF (magika mis-gated us here, truly not our job).
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
 def is_static(path):
     # a crude but sufficient static-vs-dynamic check: dynamic ELFs carry an INTERP
     # program header naming their loader (e.g. /lib64/ld-linux-x86-64.so.2). If the
@@ -316,8 +327,17 @@ def roll_verdict(findings):
 def analyze(sample):
     arch = detect_arch(sample)
     if arch is None:
-        # not an ELF we recognize: not our job. UNKNOWN, not incomplete (nothing failed).
-        return [finding("not-applicable", "not a supported ELF (x86-64/aarch64); no detonation", "UNKNOWN")], "UNKNOWN", False
+        if is_elf(sample):
+            # a real ELF whose arch v1 cannot emulate (32-bit x86, ARM32, MIPS, RISC-V,
+            # big-endian, ...). the submitter asked to detonate an in-scope ELF and we
+            # did NOT run it, so this is a GAP: fail closed (incomplete) exactly like the
+            # static-ELF path below, NEVER not-applicable+complete (the benign-by-omission
+            # trap the static engines guard against).
+            return [finding("detonation-skipped",
+                            "unsupported ELF arch (v1 emulates x86-64/aarch64 only); not detonated",
+                            "UNKNOWN")], "UNKNOWN", True
+        # genuinely not an ELF (magika mis-gated us here): not our job, nothing failed.
+        return [finding("not-applicable", "not an ELF; no detonation", "UNKNOWN")], "UNKNOWN", False
     if arch not in QEMU or not os.path.exists(QEMU[arch]):
         return [finding("detonation-error", "no emulator for arch %s" % arch, "UNKNOWN")], "UNKNOWN", True
     if is_static(sample):

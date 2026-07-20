@@ -159,6 +159,15 @@ func TestConfidenceForPolicy(t *testing.T) {
 	if c := ConfidenceFor("mal-capa", "capability", Unknown); c != ConfLow {
 		t.Fatalf("informational capa capability got %v, want LOW", c)
 	}
+	// mal-detonate: a genuine OBSERVED behavior is medium, but a detonation-timeout is
+	// a fail-closed GAP - it floors severity via incomplete yet must stay LOW so it
+	// does not inflate the triage score like a real detection.
+	if c := ConfidenceFor("mal-detonate", "net-connect", Suspicious); c != ConfMedium {
+		t.Fatalf("observed detonation behavior got %v, want MEDIUM", c)
+	}
+	if c := ConfidenceFor("mal-detonate", "detonation-timeout", Suspicious); c != ConfLow {
+		t.Fatalf("detonation-timeout gap got %v, want LOW", c)
+	}
 }
 
 // helper to build a findings slice tersely.

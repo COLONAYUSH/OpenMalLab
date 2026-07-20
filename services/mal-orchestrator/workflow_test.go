@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -203,6 +204,57 @@ func TestSubmissionWorkflowIngestBudgetFailsClosed(t *testing.T) {
 	}
 	if !hasCap {
 		t.Fatal("the per-submission ingest cap must emit a marker, not silently stop")
+	}
+}
+
+// The per-submission ingest budget must bound TOTAL vault writes, not merely stop
+// ENQUEUING deeper children. Extraction is the only vault-write path, so once the
+// budget trips no further ExtractActivity may be dispatched, even for nodes already
+// queued. Without the halt, a branching archive drives up to maxArtifacts x the
+// per-extraction cap of permanent writes. This exercises the multi-node accumulation
+// the single-extraction test above cannot.
+func TestSubmissionWorkflowIngestBudgetHaltsExtraction(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	a := &Analyzer{}
+	env.OnActivity(a.IdentifyActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-ident", Verdict: pipeline.Unknown,
+			Findings: []pipeline.Finding{{Engine: "mal-ident", Type: "file-type", Detail: "zip", Verdict: pipeline.Unknown}}}, nil)
+	env.OnActivity(a.StaticAnalyzeActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-static-yara", Verdict: pipeline.Unknown}, nil)
+	// Each extraction stays UNDER the budget on its own (half-plus-one) but lists four
+	// fresh children. So the root (call 1) enqueues four children under budget, the
+	// first child's extraction (call 2) trips the cap, and every remaining queued node
+	// must be SKIPPED - not extracted. Without the halt the BFS would extract all five.
+	var extractCalls int
+	env.OnActivity(a.ExtractActivity, mock.Anything, mock.Anything).Return(
+		func(context.Context, pipeline.SubmissionInput) (pipeline.EngineReport, error) {
+			extractCalls++
+			return pipeline.EngineReport{Engine: "mal-extract", Verdict: pipeline.Unknown,
+				IngestedBytes: maxSubmissionIngestBytes/2 + 1,
+				Children: []pipeline.Child{
+					{SHA256: strings.Repeat("b", 64), Name: "c1", Size: 10},
+					{SHA256: strings.Repeat("c", 64), Name: "c2", Size: 10},
+					{SHA256: strings.Repeat("d", 64), Name: "c3", Size: 10},
+					{SHA256: strings.Repeat("e", 64), Name: "c4", Size: 10},
+				}}, nil
+		})
+
+	env.ExecuteWorkflow(SubmissionWorkflow, pipeline.SubmissionInput{SubmissionID: "s", SHA256: strings.Repeat("a", 64)})
+	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
+		t.Fatalf("workflow did not complete cleanly: %v", env.GetWorkflowError())
+	}
+	// root (under budget, enqueues 4) + the one child that trips it = 2; all later
+	// queued nodes are halted, never extracted.
+	if extractCalls != 2 {
+		t.Fatalf("ingest budget must HALT extraction after it trips (want 2 extract calls: root + tripping child), got %d", extractCalls)
+	}
+	var res pipeline.SubmissionResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.Incomplete || res.Verdict < pipeline.Suspicious {
+		t.Fatalf("tripped ingest budget must floor SUSPICIOUS+incomplete, got %v incomplete=%v", res.Verdict, res.Incomplete)
 	}
 }
 
