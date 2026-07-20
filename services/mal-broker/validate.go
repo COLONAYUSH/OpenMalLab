@@ -84,7 +84,13 @@ func validate(r io.Reader) ([]byte, error) {
 	if err := dec.Decode(&rep); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
-	if dec.More() {
+	// dec.More() is too forgiving for a trust boundary: it answers false for a
+	// stray '}' or ']' after the document, so close-bracket garbage would ride
+	// along unseen. enforce the actual contract instead: after the one document
+	// there is nothing but whitespace until EOF. a second decode reports pure
+	// whitespace as io.EOF; any other byte, however innocent, is trailing data.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, errors.New("trailing data after one result")
 	}
 	if cr.n > maxInputBytes {
