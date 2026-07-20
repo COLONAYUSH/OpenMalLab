@@ -14,14 +14,12 @@ package knowledge
 // tier. everything fails closed: a corrupt row never certifies and never gets
 // silently overwritten against garbage.
 //
-// TODO(persist-graph, ASK STORE-1): only L0 (this Store) is durable. the L1 Graph
-// still runs on the in-memory MemGraph, so learned nodes/edges are lost on restart.
-// a BoltGraph backing GraphStore (GetNode/MergeNode/MergeEdge/OutEdges) would mirror
-// this file: a "nodes" and an "edges" bucket plus an "out:<fromID>" adjacency index
-// maintained in the SAME txn as each edge write, the same atomic poisoning guard on
-// MergeNode/MergeEdge, and the ingest-only capacity + out-degree caps. that is a
-// larger change (the adjacency index and two guards), so it is deferred here rather
-// than half-built - MemGraph stays the only GraphStore for now.
+// the L1 Graph has its durable twin in persist_graph.go: BoltGraph carries this
+// exact discipline over to the relational layer ("nodes"/"edges" buckets, an
+// "out:" adjacency index written in the same txn as each edge, the same atomic
+// poisoning guard, and the ingest-only capacity + out-degree caps). the
+// orchestrator still constructs MemGraph until the one-line wiring change
+// described at the top of persist_graph.go is made (ASK STORE-1).
 
 import (
 	"encoding/json"
