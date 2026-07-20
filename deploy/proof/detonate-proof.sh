@@ -26,8 +26,11 @@ say()  { echo "== $*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 jget() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get(sys.argv[1],""))' "$1"; }
 
-say "building the detonation worker (needs a clean network for apt; see the header)"
-MAL_PIP_CONF="${MAL_PIP_CONF:-/dev/null}" docker compose "${COMPOSE[@]}" --profile build build mal-detonate
+say "building the engine images (first run is heavy: Go/Rust/Python builds, several GB, needs a clean network for apt + pip; later runs are cached)"
+# build ALL jailed engine images, not just mal-detonate: the submitted ELF also
+# flows through ident/yara/extract/capa, which the orchestrator spawns by name, so
+# those images must exist locally before the first submission.
+MAL_PIP_CONF="${MAL_PIP_CONF:-/dev/null}" docker compose "${COMPOSE[@]}" --profile build build
 
 say "bringing up the stack"
 MAL_PIP_CONF="${MAL_PIP_CONF:-/dev/null}" docker compose "${COMPOSE[@]}" up -d
