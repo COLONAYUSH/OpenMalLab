@@ -110,7 +110,6 @@ fn main() {
     let mut findings = Vec::new();
     let mut worst = "UNKNOWN";
     for r in results.matching_rules() {
-        let name = r.identifier().to_string();
         let (verdict, attck) = classify(&r);
         if rank(verdict) > rank(worst) {
             worst = verdict;
@@ -118,7 +117,7 @@ fn main() {
         findings.push(Finding {
             engine: "mal-static-yara".into(),
             kind: "yara".into(),
-            detail: name,
+            detail: evidence(&r),
             attck,
             verdict: verdict.into(),
         });
@@ -150,6 +149,93 @@ fn classify(rule: &yara_x::Rule) -> (&'static str, String) {
         }
     }
     (verdict, attck)
+}
+
+// how many matched patterns to summarize per rule, and the hard cap on the whole
+// detail string. the broker caps detail at 8192 bytes and the console defangs +
+// inert-renders it, so a bounded, printable summary here is safe to surface.
+const MAX_MATCH_PATTERNS: usize = 8;
+const MAX_DETAIL_LEN: usize = 1500;
+
+// evidence builds the human-readable detail for a matched rule: its name, then any
+// namespace, tags, and description/reference from metadata, then a bounded summary of
+// which patterns matched and where (first-match offset + a short preview). this is
+// what an analyst actually reads a YARA hit for; without it they must pull the sample
+// and re-run `yara-x -s` by hand. the matched bytes are attacker-controlled, so the
+// preview is printable-ASCII-only and length-bounded here (the broker bounds it and
+// the console defangs it again downstream).
+fn evidence(rule: &yara_x::Rule) -> String {
+    let mut out = rule.identifier().to_string();
+    let ns = rule.namespace();
+    if !ns.is_empty() && ns != "default" {
+        out.push_str(" [");
+        out.push_str(ns);
+        out.push(']');
+    }
+    let tags: Vec<&str> = rule.tags().map(|t| t.identifier()).collect();
+    if !tags.is_empty() {
+        out.push_str(" #");
+        out.push_str(&tags.join(" #"));
+    }
+    // verdict/attck are consumed by classify; description/reference are what tell the
+    // analyst what threat the rule targets.
+    for (key, value) in rule.metadata() {
+        if let MetaValue::String(s) = value {
+            if key == "description" || key == "reference" {
+                out.push_str(" - ");
+                out.push_str(key);
+                out.push_str(": ");
+                out.push_str(s);
+            }
+        }
+    }
+    let mut shown = 0;
+    for p in rule.patterns() {
+        if shown >= MAX_MATCH_PATTERNS || out.len() >= MAX_DETAIL_LEN {
+            break;
+        }
+        if let Some(m) = p.matches().next() {
+            out.push_str(&format!(
+                " | {}@0x{:x} {}",
+                p.identifier(),
+                m.range().start,
+                preview_bytes(m.data())
+            ));
+            shown += 1;
+        }
+    }
+    // bound the total; truncate on a char boundary so a multibyte description cannot
+    // panic the worker (which would floor the scan closed and lose the evidence).
+    if out.len() > MAX_DETAIL_LEN {
+        let mut end = MAX_DETAIL_LEN;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+        out.push_str("..");
+    }
+    out
+}
+
+// preview_bytes renders up to 24 bytes of matched (attacker-controlled) data as a
+// quoted printable-ASCII preview; every non-printable byte becomes '.', so no control
+// characters or escapes reach the string.
+fn preview_bytes(b: &[u8]) -> String {
+    let n = b.len().min(24);
+    let mut s = String::with_capacity(n + 4);
+    s.push('"');
+    for &c in &b[..n] {
+        s.push(if (0x20..0x7f).contains(&c) {
+            c as char
+        } else {
+            '.'
+        });
+    }
+    s.push('"');
+    if b.len() > n {
+        s.push_str("..");
+    }
+    s
 }
 
 // fail-closed: if the worker cannot analyze, it reports SUSPICIOUS + incomplete.
@@ -218,6 +304,34 @@ mod tests {
             .expect("eicar hit");
         assert_eq!(e.1, "MALICIOUS");
         assert_eq!(e.2, "T1204");
+    }
+
+    #[test]
+    fn evidence_surfaces_matched_strings() {
+        // the enriched detail must carry more than the bare rule name: at least one
+        // matched pattern with its offset, so an analyst sees WHAT matched and WHERE
+        // without pulling the sample and re-running yara-x by hand.
+        let (rules, _) = compile_rules().expect("rules compile");
+        let mut scanner = yara_x::Scanner::new(&rules);
+        let data = eicar();
+        let results = scanner.scan(&data).expect("scan");
+        let r = results
+            .matching_rules()
+            .find(|r| r.identifier() == "eicar_test_file")
+            .expect("eicar hit");
+        let detail = evidence(&r);
+        assert!(
+            detail.starts_with("eicar_test_file"),
+            "detail must start with the rule name: {detail}"
+        );
+        assert!(
+            detail.contains("@0x"),
+            "detail must include a matched-string offset: {detail}"
+        );
+        assert!(
+            detail.len() <= MAX_DETAIL_LEN + 2,
+            "detail must stay bounded"
+        );
     }
 
     #[test]
