@@ -1,5 +1,32 @@
 # MalAnalyzer - Architecture & Tech-Stack Design (v1, post-audit)
 
+> [!IMPORTANT]
+> **This is the original grand design, not the current deployment.** This document
+> (and the numbered diagram set in `diagrams/src/`) describes the full, multi-year
+> north-star architecture: NATS JetStream, Valkey, Qdrant, a physically-segregated
+> detonation node with KVM/Xen tiers, and a dual-LLM AI quarantine. **The system
+> that ships on `main` today is deliberately simpler** and, in places, took a
+> different path than the ADRs below.
+>
+> What actually shipped, in one line: Temporal-durable workflows over single-use
+> Docker jails, one strict broker as the sole trust boundary, a fail-closed lattice,
+> a nine-agent Pydantic-AI plane behind a downgrade-only confidence gate and a
+> four-tier BoltDB-backed knowledge base, a read-only Go console, and a first
+> qemu-user dynamic-analysis slice. The stack is Postgres + Temporal + SeaweedFS +
+> OpenBao + embedded BoltDB - **no NATS, Valkey, or Qdrant is wired**; the AI plane
+> is the roster + gate design here, **not** a dual-LLM/CaMeL quarantine; the console
+> is a Go binary serving one static page, **not** a TS/React SPA; the engine contract
+> is one JSON document over stdout through the broker, **not** gRPC over a UDS
+> (`proto/analyze.proto` has no importers on `main`).
+>
+> For the as-built picture and code links, read [`COMPONENTS.md`](COMPONENTS.md) and
+> the two as-built diagrams
+> ([`diagrams/pipeline.dot`](diagrams/pipeline.dot),
+> [`diagrams/agentic-plane.dot`](diagrams/agentic-plane.dot)). For phase-by-phase
+> status, read [`ROADMAP.md`](ROADMAP.md) (the freshest source). Keep the design
+> below as the roadmap-level intent; where it and the code disagree about what is
+> built, the code and `COMPONENTS.md` win.
+
 > Companion to `docs/FEATURE-SPEC.md`. Every significant decision is an **ADR** (*Context -> Options -> Decision -> Why -> Consequences/Feasibility*). This is **v1**, hardened after a four-lens adversarial audit (security/containment, distributed-systems/scale, tech-stack/feasibility/licensing, AI-architecture). ADRs changed by the audit are marked **revised** with a pointer to the reconciliation in **section 8**, which is the full audit trail (finding -> disposition -> change).
 
 **Headline verdict after audit:** the architecture is sound and the "orchestrate the field, don't reinvent it" instinct is right - but (1) the containment controls the "most secure" claim rested on were theater as first drafted and are re-architected here; (2) the AI injection defense was the known-failing prompt-level playbook and is replaced with an architectural (quarantine) control; (3) the licensing model was half-right and is corrected - process separation is *mandatory*, not merely preferred; and (4) the roadmap was ~2-4x under-scoped and is recut. Buildable and legally shippable **over years, not quarters, with counsel sign-off and a detonation specialist hired first.**

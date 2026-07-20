@@ -2,13 +2,28 @@
 
 The authoritative, audited diagram set for MalAnalyzer. These are **rendered from committed Graphviz source** (`src/*.dot`) - chosen over cloud diagram tools deliberately: the source is plain text (diff-reviewable in PRs), the toolchain is a single binary, and the whole build is **fully air-gapped** (no network, no external fonts, no service), matching the platform's own deployment model.
 
-Every diagram was drawn against the design **after** the round-2 adversarial audit (`../DESIGN-AUDIT.md`), so each depicts what is *true* - including, on diagram 08, where a trust boundary is deliberately **absent**. The rule for this set: **if a path isn't drawn, it isn't reachable.**
+> [!IMPORTANT]
+> **Two eras live here.** The numbered `src/01-*.dot` ... `src/11-*.dot` set is the original **grand-design** reference: it was drawn against the multi-tier, physically-segregated design in `../ARCHITECTURE.md` and depicts components (NATS, Valkey, Qdrant, a separate detonation node with KVM/Xen tiers, a dual-LLM AI quarantine) that are **the long-term north star, not what ships on main today**. The system that actually ships is simpler. For the **as-built** picture, use the two diagrams below (`pipeline.dot`, `agentic-plane.dot`) and [`../COMPONENTS.md`](../COMPONENTS.md). Keep the numbered set as the roadmap-level design reference; do not read it as the current deployment.
+
+## As-built diagrams (the system on `main`)
+
+| Diagram | What it shows | Source |
+|---|---|---|
+| [Submission to verdict](render/pipeline.svg) | The end-to-end pipeline: gateway content-addressing, the Temporal artifact-tree walk, the single-use jails, the broker decode path, the fail-closed lattice + score, and the caged AI plane off the critical path | [`pipeline.dot`](pipeline.dot) |
+| [Agentic analyst plane](render/agentic-plane.svg) | Every component and trust boundary of the AI plane: the Pydantic-AI roster, the strict validator, the downgrade-only confidence gate, the four knowledge tiers, HITL, and the learning writeback | [`agentic-plane.dot`](agentic-plane.dot) |
+
+Both live at the top of `docs/diagrams/` (not `src/`) and are rebuilt by the same `./render.sh` (which now globs both `src/*.dot` and the top-level `*.dot`). They are the diagrams the top-level `README.md` embeds.
+
+## The grand-design set (roadmap reference)
+
+Every diagram below was drawn against the design **after** the round-2 adversarial audit (`../DESIGN-AUDIT.md`), so each depicts what that design intends - including, on diagram 08, where a trust boundary is deliberately **absent**. The rule for this set: **if a path isn't drawn, it isn't reachable.**
 
 ## Rebuild (air-gapped, reproducible)
 
 ```bash
-./render.sh          # render every src/*.dot -> render/<name>.{svg,png}
+./render.sh          # render every src/*.dot AND the top-level *.dot -> render/<name>.{svg,png}
 ./render.sh 03       # render only sources matching "03"
+./render.sh pipeline # render only the as-built pipeline diagram
 ```
 
 Requires only Graphviz (`dot`). SVG is the primary artifact (scales, crisp); PNG (144 dpi) is a universal fallback. Both are committed so the diagrams are viewable offline with zero toolchain.
