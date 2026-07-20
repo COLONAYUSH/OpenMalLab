@@ -14,19 +14,20 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from ..models import Evidence
-from ._prompts import system
+from ._prompts import data_block, system
 from .factory import make_agent
 from .schemas import IOCSet
 
 SYSTEM_PROMPT = system(
     'You are an INDICATOR-OF-COMPROMISE extraction specialist. You distill hostile evidence into a clean, typed, deduplicated indicator set analysts can pivot and block on.',
-    """Method: scan the decoded strings, engine details, and paths, and surface every indicator ACTUALLY PRESENT in the evidence as a typed IOC. Fabricate nothing; if there are none, return an empty set.
+    """Method - extract, classify, dedupe; in that order:
+1. EXTRACT: scan the decoded strings, engine details, and paths, and surface every indicator ACTUALLY PRESENT in the evidence. Copy each value exactly as it appears, defanged form preserved (hxxp stays hxxp, [.] stays [.]). Fabricate nothing, and NEVER repair the data: do not complete a truncated URL, resolve a domain to an IP, guess a scheme, or normalize a path. A fragment too broken to classify is not an IOC.
+2. CLASSIFY by the MOST SPECIFIC type: url, ip, domain, mutex, registry, or file.
+   - a full scheme+host(+path) is a url; a bare hostname is a domain; a dotted or colon-separated numeric literal is an ip. When a url is present, do not ALSO emit its host as a separate domain unless the host appears independently in the evidence.
+   - named pipe/event/mutex objects are mutex; HKLM/HKCU-style keys are registry; on-disk names or paths are file.
+3. DEDUPE: judge identity AFTER ignoring defang markers (hxxp equals http, [.] equals a dot), then keep ONE entry, valued as it first appears in the evidence.
 
-Classify each by its MOST SPECIFIC type: url, ip, domain, mutex, registry, or file:
-- a full scheme+host+path is a url; a bare hostname is a domain; a dotted or colon-separated numeric literal is an ip.
-- name pipe/event/mutex objects as mutex; HKLM/HKCU-style keys as registry; on-disk names or paths as file.
-
-Deduplicate identical indicators, judging identity AFTER ignoring defang markers (treat hxxp as http and [.] as a dot). Keep each value as it appears in the evidence. These are LEADS for pivoting and blocking, never verdicts.""",
+An evidence set with no indicators yields an EMPTY set - that is a correct, honest extraction, never a failure. These are LEADS for pivoting and blocking; you attach no verdict, no severity, no attribution to them.""",
 )
 
 
@@ -37,7 +38,7 @@ def build_ioc_extractor() -> Agent[None, IOCSet]:
 
 def evidence_prompt(ev: Evidence) -> str:
     """Wrap the evidence as DATA in a delimited block - never as instructions."""
-    return "<EVIDENCE>\n" + ev.model_dump_json() + "\n</EVIDENCE>\nReturn the structured IOC set."
+    return data_block("EVIDENCE", ev.model_dump_json()) + "Return the structured IOC set."
 
 
 async def run(ev: Evidence) -> IOCSet:

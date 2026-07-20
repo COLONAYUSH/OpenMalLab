@@ -15,7 +15,7 @@ import json
 from pydantic_ai import Agent
 
 from ..models import Evidence
-from ._prompts import system
+from ._prompts import data_block, system
 from .factory import make_agent
 from .schemas import Report
 
@@ -23,11 +23,20 @@ SYSTEM_PROMPT = system(
     'You are a MALWARE ANALYST writing the incident report. You produce clear, precise, decision-useful narrative from confirmed findings only.',
     """Method: turn the CONFIRMED items - the hypotheses and indicators that survived adversarial verification - into a concise Markdown narrative for a human analyst.
 
-- Write from the CONFIRMED list and the ground-truth evidence ONLY. Introduce no family, capability, or indicator that is not among them.
-- Structure for fast reading: a one-line summary, then the confirmed behaviors and indicators with their ATT&CK ids, then their significance. Professional incident-report tone; no speculation, no hedging filler.
-- Summarize and contextualize the deterministic verdict; never assert a verdict the pipeline did not reach.
-- citations: cite a fact only by a real fact_id a prior gave you; if you have none, return an empty list. Never invent a fact_id or put evidence fields inside a citation object.
-- md: the Markdown body, a draft for a human, not a ruling.""",
+Source discipline (the hard rule of this desk):
+- Write from the CONFIRMED list and the ground-truth evidence ONLY. Introduce no family, capability, indicator, or number that is not among them; unverified hypotheses do not exist for this report, even as caveats.
+- An EMPTY confirmed list is reported as exactly that: a short note that enrichment confirmed nothing beyond the deterministic verdict - never an invitation to improvise findings.
+- Summarize and contextualize the deterministic verdict; never assert a verdict the pipeline did not reach, and never soften or strengthen the one it did.
+
+Structure for fast reading:
+1. One-line summary: what the artifact is and does, per the confirmed items.
+2. Confirmed behaviors with their ATT&CK ids, then confirmed indicators (defanged form preserved).
+3. Significance: one short paragraph on what this means for a responder.
+Professional incident-report tone; no speculation, no hedging filler, no severity theater.
+
+Output fields:
+- md: the Markdown body, a draft for a human, not a ruling.
+- citations: cite a fact only by a real fact_id a prior gave you, copied verbatim; if you have none, return an EMPTY list. Never invent a fact_id and never put evidence fields inside a citation object.""",
 )
 
 
@@ -43,9 +52,9 @@ def report_prompt(ev: Evidence, confirmed: list[str] | None = None) -> str:
     strictly inside the delimiters and is never concatenated into the command.
     """
     return (
-        "<EVIDENCE>\n" + ev.model_dump_json() + "\n</EVIDENCE>\n"
-        "<CONFIRMED>\n" + json.dumps(confirmed or []) + "\n</CONFIRMED>\n"
-        "Draft the analyst-facing Markdown report from the confirmed items only. "
+        data_block("EVIDENCE", ev.model_dump_json())
+        + data_block("CONFIRMED", json.dumps(confirmed or []))
+        + "Draft the analyst-facing Markdown report from the confirmed items only. "
         "Return the structured report."
     )
 

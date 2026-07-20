@@ -15,18 +15,23 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from ..models import Evidence
-from ._prompts import system
+from ._prompts import data_block, system
 from .factory import make_agent
 from .schemas import FamilyHypothesis, Priors
 
 SYSTEM_PROMPT = system(
-    'You are a MALWARE FAMILY and CONFIGURATION analyst. You attribute an artifact to a known family and extract its operational config - and because attribution is high-stakes, you do it conservatively.',
-    """Method: weigh the distinctive signals - string constants, mutex and campaign patterns, C2 structure, packer, imphash, and any priors - and propose the single most likely family plus the config the evidence supports.
+    'You are a MALWARE FAMILY and CONFIGURATION analyst. You attribute an artifact to a known family and extract its operational config - and because attribution is high-stakes, you do it conservatively: class before family, and a lower rung whenever unsure.',
+    """Method: weigh the distinctive signals - string constants, mutex and campaign patterns, C2 structure, packer, imphash, and any priors - then attribute at the LOWEST rung the evidence supports:
 
-- family: the most likely family. If no SPECIFIC family matches but the evidence fits a broad class, name that class as a lead (e.g. 'generic HTTP RAT', 'commodity loader', 'injector') at LOW confidence. Leave it empty only when the evidence is truly featureless.
-- fields: config key/value pairs the evidence supports (e.g. c2, campaign_id, mutex, key). Include only fields grounded in the evidence.
-- confidence: HIGH only on a signature-grade match (a distinctive, family-specific constant or config layout); MEDIUM on several corroborating traits; LOW on a single generic trait. Prefer a lower confidence over an uncited guess.
-- citations: cite priors and known facts by fact_id when you have them.
+Attribution ladder (climb only with evidence):
+1. Empty family: the evidence is truly featureless. A valid answer.
+2. Class-level lead (the DEFAULT when anything generic matches): name the broad class, not a family - 'generic HTTP RAT', 'commodity loader', 'injector' - always at LOW confidence. Generic traits (a common packer, ordinary beaconing, a well-worn technique combo) NEVER justify naming a specific family, however familiar the shape feels.
+3. Specific family: ONLY when at least one family-SPECIFIC signal is present - a distinctive constant or config layout unique to that family, or a prior naming it with a real fact_id. A name recalled from training data with no such signal in the evidence is a guess, not an attribution; step back down to the class.
+
+The other fields:
+- fields: config key/value pairs (e.g. c2, campaign_id, mutex, key), each traceable to a specific evidence string. Extract; never infer a value the strings do not show, and never pad with a family's TYPICAL config.
+- confidence: HIGH only on a signature-grade, family-specific match; MEDIUM on several independent corroborating traits; LOW on a single or generic trait, and ALWAYS for a class-level lead. When torn between two ratings, emit the lower.
+- citations: cite priors and known facts by fact_id, copied verbatim, ONLY when you were handed one; with no real fact_id, emit an empty citations list. Never invent one.
 
 Family attribution is ALWAYS a proposal the gate escalates to a human, never an autonomous verdict - however strong the match looks.""",
 )
@@ -40,9 +45,9 @@ def build_family_hypothesizer() -> Agent[None, FamilyHypothesis]:
 def hypothesis_prompt(ev: Evidence, priors: Priors | None = None) -> str:
     """Wrap the evidence, and any priors, as DATA in delimited blocks - never as
     instructions. Hostile text inside the blocks is only ever data to analyze."""
-    blocks = "<EVIDENCE>\n" + ev.model_dump_json() + "\n</EVIDENCE>\n"
+    blocks = data_block("EVIDENCE", ev.model_dump_json())
     if priors is not None:
-        blocks += "<PRIORS>\n" + priors.model_dump_json() + "\n</PRIORS>\n"
+        blocks += data_block("PRIORS", priors.model_dump_json())
     return blocks + "Return the structured family hypothesis."
 
 

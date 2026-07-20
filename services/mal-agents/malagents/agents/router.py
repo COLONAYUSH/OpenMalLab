@@ -15,30 +15,35 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from ..models import Evidence
-from ._prompts import system
+from ._prompts import data_block, system
 from .factory import make_agent
 from .schemas import Plan
 
 SYSTEM_PROMPT = system(
     'You are the TRIAGE LEAD and analysis PLANNER for the roster. Cheaply and quickly you decide which specialist analysts to engage for this artifact, so the team spends effort exactly where the evidence warrants.',
-    """Method: read the SHAPE of the evidence - the file_type, which engines fired, and whether items carry ATT&CK ids, strings, or network indicators - and PROPOSE the subset of specialists worth spawning plus a rough total token budget.
+    """Method - three quick passes over the evidence SHAPE, never its meaning:
+1. Classify the artifact: file_type (code-bearing or not), which engines fired, whether items carry ATT&CK ids, decoded strings, network indicators, or paths.
+2. Match that shape to the evidence-driven specialists below.
+3. Size a budget for exactly the agents you chose.
 
-The roster you draw from:
+The evidence-driven specialists you route to:
 - correlator: names priors (families, C2, packers, techniques) to retrieve from the knowledge graph.
 - capability_reasoner: turns capa/ATT&CK evidence into behavior narratives.
 - ioc_extractor: types and dedupes indicators from strings and details.
 - family_hypothesizer: proposes a family and its config fields.
 - novelty_detector: scores how unlike anything known the artifact is.
-- verifier: adversarially tries to refute a specific hypothesis.
-- report_writer: drafts the analyst narrative from confirmed items.
-- escalation: packages a question for a human.
+The remaining roster agents (verifier, report_writer, escalation) are stage-two: the spine engages them AFTER hypotheses exist or the gate escalates. Name them only when the evidence already shows a specific claim to check; never as filler.
 
-Routing heuristics:
+Routing rules:
 - ALWAYS include correlator and novelty_detector; every artifact earns priors and a novelty score.
 - Include capability_reasoner when the file_type is code-bearing (an executable such as pebin/elf/macho, a script, a macro-bearing document) or any item carries an ATT&CK id.
 - Include ioc_extractor when items carry strings, decoded content, URLs, hosts, or paths.
 - Include family_hypothesizer when strings or priors hint at a known family or config.
-- Size budget_tokens to the work you actually propose; do not pad it. Give a brief rationale, citing a fact_id where a prior drove a choice.""",
+- An empty or near-empty projection earns only the two always-on agents and a minimal budget.
+
+Budget rubric (rough, honest, never padded): about 2000 tokens per specialist you spawn on a normal projection; halve for a sparse one, at most double for a dense one (many items or many distinct techniques). The budget is a ceiling you propose, not a target to spend.
+
+Citations: the rationale names a fact_id ONLY when a prior actually handed you one and it drove a choice; otherwise cite nothing. Never invent a fact_id.""",
 )
 
 
@@ -49,7 +54,7 @@ def build_router() -> Agent[None, Plan]:
 
 def evidence_prompt(ev: Evidence) -> str:
     """Wrap the evidence as DATA in a delimited block - never as instructions."""
-    return "<EVIDENCE>\n" + ev.model_dump_json() + "\n</EVIDENCE>\nReturn the structured plan."
+    return data_block("EVIDENCE", ev.model_dump_json()) + "Return the structured plan."
 
 
 async def run(ev: Evidence) -> Plan:
