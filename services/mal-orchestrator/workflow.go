@@ -171,6 +171,23 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 			SHA256:       item.SHA256,
 		}
 
+		// surface every NON-ROOT artifact's verified content hash as evidence, tagged
+		// with its breadcrumb path. the root hash is already in SubmissionResult.SHA256;
+		// extracted children were re-hashed by the extractor's ingest and then used only
+		// for recursion, so without this an analyst has no way to grab the hash of a
+		// bundled file to blocklist / share / pivot. informational (UNKNOWN + LOW):
+		// identity, not a detection, so it carries no severity or score weight.
+		if item.Depth > 0 {
+			res.Findings = append(res.Findings, pipeline.Finding{
+				Engine:     "mal-orchestrator",
+				Type:       "artifact-sha256",
+				Detail:     "sha256=" + item.SHA256,
+				Verdict:    pipeline.Unknown,
+				Confidence: pipeline.ConfLow,
+				Path:       item.Path,
+			})
+		}
+
 		// identify and scan in parallel: two jails, no ordering between them.
 		identF := workflow.ExecuteActivity(ctx, a.IdentifyActivity, artifact)
 		yaraF := workflow.ExecuteActivity(ctx, a.StaticAnalyzeActivity, artifact)

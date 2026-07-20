@@ -615,6 +615,20 @@
   function normalize(api) {
     var byPath = {};
     (api.findings || []).forEach(function (f) { var p = f.path || ""; (byPath[p] = byPath[p] || { path: p, findings: [] }).findings.push(f); });
+    // lift each non-root artifact's content hash (the orchestrator emits it as an
+    // "artifact-sha256" finding) onto its node, and drop it from the visible findings
+    // list: it is the node's identity, not a detection.
+    Object.keys(byPath).forEach(function (p) {
+      var node = byPath[p];
+      node.findings = node.findings.filter(function (f) {
+        if (f.engine === "mal-orchestrator" && f.type === "artifact-sha256") {
+          var m = /sha256=([0-9a-f]{64})/.exec(f.detail || "");
+          if (m) { node.sha256 = m[1]; }
+          return false;
+        }
+        return true;
+      });
+    });
     var tree = Object.keys(byPath).sort(function (a, b) { return a.length - b.length; }).map(function (p) { return byPath[p]; });
     if (tree[0]) { tree[0].sha256 = api.sha256; tree[0].file_type = api.file_type; }
     return { submission_id: api.submission_id, sha256: api.sha256, file_type: api.file_type, verdict: api.verdict, score: api.score, confidence: api.confidence, incomplete: api.incomplete, needs_review: !!api.needs_review, enriched: !!api.enriched, tree: tree };

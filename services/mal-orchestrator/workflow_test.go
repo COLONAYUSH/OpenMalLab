@@ -258,6 +258,51 @@ func TestSubmissionWorkflowIngestBudgetHaltsExtraction(t *testing.T) {
 	}
 }
 
+// Every extracted child's verified content hash must be surfaced (tagged with its
+// breadcrumb path) so an analyst can grab the hash of a bundled file to
+// blocklist/share/pivot; it was previously used only for recursion and dropped.
+func TestSubmissionWorkflowSurfacesChildHash(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	a := &Analyzer{}
+	childSha := strings.Repeat("b", 64)
+	env.OnActivity(a.IdentifyActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-ident", Verdict: pipeline.Unknown,
+			Findings: []pipeline.Finding{{Engine: "mal-ident", Type: "file-type", Detail: "zip", Verdict: pipeline.Unknown}}}, nil)
+	env.OnActivity(a.StaticAnalyzeActivity, mock.Anything, mock.Anything).Return(
+		pipeline.EngineReport{Engine: "mal-static-yara", Verdict: pipeline.Unknown}, nil)
+	// the root extraction yields one child under budget; the child's own extraction
+	// finds nothing further, so the tree is root + one analyzed child.
+	first := true
+	env.OnActivity(a.ExtractActivity, mock.Anything, mock.Anything).Return(
+		func(context.Context, pipeline.SubmissionInput) (pipeline.EngineReport, error) {
+			if first {
+				first = false
+				return pipeline.EngineReport{Engine: "mal-extract", Verdict: pipeline.Unknown,
+					Children: []pipeline.Child{{SHA256: childSha, Name: "evil.dll", Size: 10}}}, nil
+			}
+			return pipeline.EngineReport{Engine: "mal-extract", Verdict: pipeline.Unknown}, nil
+		})
+
+	env.ExecuteWorkflow(SubmissionWorkflow, pipeline.SubmissionInput{SubmissionID: "s", SHA256: strings.Repeat("a", 64)})
+	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
+		t.Fatalf("workflow did not complete cleanly: %v", env.GetWorkflowError())
+	}
+	var res pipeline.SubmissionResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range res.Findings {
+		if f.Type == "artifact-sha256" && strings.Contains(f.Detail, childSha) && strings.Contains(f.Path, "evil.dll") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("extracted child's verified sha256 must be surfaced as an artifact-sha256 finding tagged with its path")
+	}
+}
+
 // when the AI plane is enabled, the deterministic workflow hands off to the
 // enrichment child (ABANDON) and completes immediately with its verdict UNCHANGED
 // - the AI plane can never alter or delay the spine.
