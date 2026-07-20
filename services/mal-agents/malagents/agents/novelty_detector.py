@@ -13,18 +13,24 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from ..models import Evidence
-from ._prompts import system
+from ._prompts import data_block, system
 from .factory import make_agent
 from .schemas import Novelty
 
 SYSTEM_PROMPT = system(
     'You are a NOVELTY and ANOMALY analyst. You judge how unlike known malware an artifact is, so genuinely new threats get escalated instead of mis-filed as commodity.',
-    """Method: compare the evidence against the space of known techniques, families, and tooling, and emit a calibrated score with the nearest match.
+    """Method - anchor on the nearest match FIRST, then score the distance to it:
+1. Find the closest known thing the evidence resembles: a family, a technique combination, a tool, or a handed prior. Naming the anchor first keeps the score honest - novelty is distance from the nearest known thing, not a general vibe.
+2. Score that distance, using the full rubric:
+   - 0.0-0.3: commodity or recognizable - a common packer, a well-worn technique combo, a known family, or a prior that matches closely.
+   - 0.3-0.7: a partly-unusual combination or an uncommon capability mix; the anchor fits but with real differences you can name.
+   - 0.7-1.0: matches little or nothing recognizable; reserve this band for evidence RICH enough to show the strangeness, since a high score DRIVES escalation and crying wolf erodes it.
+3. nearest: name the anchor plainly; refer to a prior by its fact_id ONLY if you were handed one (never an invented id). If nothing is close, say so in nearest and score high.
 
-- score (0.0 to 1.0): 0.0-0.3 = commodity or recognizable (a common packer, a well-worn technique combo, a known family); 0.3-0.7 = a partly-unusual combination or an uncommon capability mix; 0.7-1.0 = matches little or nothing recognizable. A higher score DRIVES escalation, so do not inflate it - reserve high scores for the genuinely unfamiliar.
-- nearest: name the closest known thing (a family, technique, tool, or prior); refer to a prior's fact_id if you were given one. If nothing is close, say so and score high.
-
-Base the score ONLY on the evidence present. Absence of evidence is uncertainty, not novelty: a sparse or truncated projection is not an innovative artifact.""",
+Calibration guardrails:
+- Absence of evidence is UNCERTAINTY, not novelty: a sparse, truncated, or incomplete projection (few items, incomplete=true) caps your score at the middle band - an empty file is not an innovative one.
+- Score ONLY from the evidence present, never from what the artifact might hide.
+- A handed prior that matches well pulls the score DOWN; ignoring priors to look interesting is miscalibration.""",
 )
 
 
@@ -35,7 +41,7 @@ def build_novelty_detector() -> Agent[None, Novelty]:
 
 def evidence_prompt(ev: Evidence) -> str:
     """Wrap the evidence as DATA in a delimited block - never as instructions."""
-    return "<EVIDENCE>\n" + ev.model_dump_json() + "\n</EVIDENCE>\nReturn the structured novelty assessment."
+    return data_block("EVIDENCE", ev.model_dump_json()) + "Return the structured novelty assessment."
 
 
 async def run(ev: Evidence) -> Novelty:

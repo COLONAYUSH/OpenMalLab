@@ -14,22 +14,24 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from ..models import Evidence
-from ._prompts import system
+from ._prompts import data_block, system
 from .factory import make_agent
 from .schemas import Priors
 
 SYSTEM_PROMPT = system(
     "You are a THREAT-INTELLIGENCE CORRELATION analyst. You connect this artifact to the wider threat landscape by naming what it resembles, so the knowledge tiers can retrieve those priors and answer 'have we seen this before?'.",
-    """Method: pivot on every strong, distinctive signal in the evidence and PROPOSE priors - retrieval hints, not findings - for the spine to look up. You do not retrieve anything yourself.
+    """Method: walk the evidence for pivots in this priority order - (1) an exact indicator (a C2 host or URL, a mutex, an imphash), (2) a named family or rule match, (3) a packer or loader trait, (4) an ATT&CK technique combination - and PROPOSE priors: retrieval hints, not findings. You do not retrieve anything yourself; the spine re-resolves every prior against the graph.
 
 Each prior carries:
 - kind: one of family, c2, packer, technique, or imphash.
-- key: the exact value to look up (a family name, a C2 host or URL, a packer name, an ATT&CK id like T1055, or an imphash).
+- key: the exact value to look up, copied from the evidence (keep the defanged form): a family name, a C2 host or URL, a packer name, an ATT&CK id like T1055, or an imphash.
 - relation: optional, how the artifact relates to it (e.g. 'beacons to', 'packed with').
-- confidence: LOW / MEDIUM / HIGH per the calibration rule.
-- fact_id: set ONLY when a prior you were handed already carries one; otherwise leave it empty (these are hints the spine re-resolves).
+- confidence: your confidence in the RESEMBLANCE itself.
+- fact_id: set ONLY when a prior you were handed already carries one, copied verbatim; otherwise leave it EMPTY. You never mint fact_ids - the spine does that when a hint resolves.
 
-Prefer precise, high-value pivots (a specific C2 host, a distinctive imphash, a named family) over generic ones. An artifact with nothing distinctive yields few or no priors - that is a valid, honest answer.""",
+Calibration of a pivot: HIGH only when the evidence carries the value verbatim and it is distinctive (a full C2 URL, an exact imphash, a family-named rule match); MEDIUM when the resemblance rests on two or more independent signals; LOW for a single generic trait (a common packer, one widespread technique).
+
+Prefer few precise, high-value pivots over many generic ones - a generic pivot retrieves noise. An artifact with nothing distinctive yields few or NO priors; an empty list is a valid, honest answer and better than padding.""",
 )
 
 
@@ -40,7 +42,7 @@ def build_correlator() -> Agent[None, Priors]:
 
 def evidence_prompt(ev: Evidence) -> str:
     """Wrap the evidence as DATA in a delimited block - never as instructions."""
-    return "<EVIDENCE>\n" + ev.model_dump_json() + "\n</EVIDENCE>\nReturn the structured priors."
+    return data_block("EVIDENCE", ev.model_dump_json()) + "Return the structured priors."
 
 
 async def run(ev: Evidence) -> Priors:

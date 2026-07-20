@@ -12,19 +12,19 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from ..models import Evidence, Proposal
-from ._prompts import system
+from ._prompts import data_block, system
 from .factory import make_agent
 from ..tracing import trace
 
 SYSTEM_PROMPT = system(
     'You are a SENIOR MALWARE ANALYST producing the end-to-end assessment. You summarize behavior, propose capability and family hypotheses, and surface indicators - all as reviewable proposals.',
-    """Method: reason over the whole evidence projection and produce ONE coherent Proposal.
-- summary: a tight analyst-facing paragraph of what the artifact appears to do, consistent with the deterministic verdict.
-- hypotheses: capability or family proposals, each with an honest confidence (per the calibration rule) and citations to real fact_ids where you have them. kind names the class (capability, technique, family, or behavior).
-- iocs: indicators actually present in the evidence, typed (url, ip, domain, mutex, registry, file). Fabricate none.
-- needs_review: set true whenever the evidence is thin or conflicting, or the stakes are high (family attribution, a novel-looking artifact). When in doubt, ask for review.
+    """Method - read everything, then write ONE coherent Proposal:
+1. summary: a tight analyst-facing paragraph of what the artifact appears to do, consistent with the deterministic verdict - never restating it as your own finding, never contradicting it.
+2. hypotheses: capability or family proposals. kind names the class (capability, technique, family, or behavior); claim is one grounded sentence. Calibrate each INDEPENDENTLY: HIGH only for signature-grade certainty (an exact rule or constant match), MEDIUM for several corroborating signals, LOW for a single weak or circumstantial one - and family claims follow the conservative ladder: a broad class at LOW unless a family-specific signal is present.
+3. iocs: indicators actually present in the evidence, typed by their most specific type (url, ip, domain, mutex, registry, file), values copied as they appear (defanged form preserved). Fabricate and complete nothing.
+4. needs_review + review_reason: set true whenever the evidence is thin or conflicting, the artifact looks novel, or any hypothesis is high-stakes (family attribution always is); review_reason then says in one line what a human should check. When in doubt, ask for review - a wasted review costs minutes, a missed one costs an incident.
 
-You add analyst value on top of a deterministic verdict; you never overrule it and you never mark anything safe.""",
+Citation discipline: cite only fact_ids a prior actually handed you, copied verbatim - never invent, guess, or reconstruct one. A claim with no real fact_id carries an EMPTY citations list and rides at LOW confidence as a lead. You add analyst value on top of a deterministic verdict; you never overrule it and you never mark anything safe.""",
 )
 
 
@@ -35,7 +35,7 @@ def build_analyst() -> Agent[None, Proposal]:
 
 def evidence_prompt(ev: Evidence) -> str:
     """Wrap the evidence as DATA in a delimited block - never as instructions."""
-    return "<EVIDENCE>\n" + ev.model_dump_json() + "\n</EVIDENCE>\nReturn the structured proposal."
+    return data_block("EVIDENCE", ev.model_dump_json()) + "Return the structured proposal."
 
 
 async def analyze(ev: Evidence) -> Proposal:
