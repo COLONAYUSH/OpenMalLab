@@ -1,0 +1,80 @@
+// OpenMalLab - end-to-end submission-to-verdict pipeline (as-built on main).
+// Render:  dot -Tsvg docs/diagrams/pipeline.dot -o docs/diagrams/render/pipeline.svg
+//
+// Reading it: a submission is content-addressed at the gateway, never parsed
+// there, then walked as an artifact tree by a durable Temporal workflow. Every
+// engine that touches hostile bytes runs in a single-use jail (no net, no caps,
+// read-only root, non-root, seccomp, bounded). No engine output is trusted until
+// a separately-jailed broker validates it. Findings fold on a fail-closed
+// lattice; the caged AI plane runs off the critical path and can only raise
+// severity, capped, never lower it. If a path is not drawn, it is not reachable.
+
+digraph pipeline {
+  rankdir=TB;
+  compound=true;
+  newrank=true;
+  nodesep=0.35; ranksep=0.6; pad=0.35;
+  graph [fontname="Helvetica", fontsize=11, labelloc=t,
+         label=<<b>OpenMalLab - Submission to Verdict</b><br/><font point-size="10">content-address, walk the tree in jails, validate at the broker, fold fail-closed; the AI enriches but never disposes</font>>];
+  node  [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", fillcolor="#f2f4f8", color="#3d4757", margin="0.14,0.08"];
+  edge  [fontname="Helvetica", fontsize=9, color="#4a5060"];
+
+  AN  [label="analyst\n(submit file, optional detonate=true)", shape=oval, fillcolor="#e6dcf1", color="#6a1b9a"];
+
+  // ---- control plane: trusted, never parses hostile bytes in-process ----
+  subgraph cluster_control {
+    label=<<b>CONTROL PLANE</b>  (trusted; never executes or parses hostile bytes in-process)>;
+    style="rounded,filled"; fillcolor="#eef6f0"; color="#2f8f63"; fontcolor="#1b5e20";
+    GW   [label="mal-gateway\nhash + content-address, 256 MiB cap\nstart workflow, read results", fillcolor="#dff0e6"];
+    OR   [label="mal-orchestrator (Temporal worker)\nSubmissionWorkflow: BFS artifact tree\n(depth<=8, <=200 artifacts), spawns jails,\nre-hashes children, fail-closed fold", fillcolor="#dff0e6"];
+    VAULT[label="sample vault\ncontent-addressed by sha256, chmod 0600", shape=cylinder, fillcolor="#e3ece6"];
+  }
+
+  // ---- data plane: parses hostile bytes, cannot execute or reach the net ----
+  subgraph cluster_jail {
+    label=<<b>SINGLE-USE JAILS</b>  (network none, all caps dropped, read-only root, non-root 65534, seccomp, bounded)>;
+    style="rounded,filled"; fillcolor="#eef1f8"; color="#2f628f"; fontcolor="#0d47a1";
+    ID [label="mal-ident\nMagika content type"];
+    YA [label="mal-static-yara\nYARA-X signatures"];
+    EX [label="mal-extract\nrecursive unpack (writable /out)"];
+    CA [label="mal-capa\ncapa ATT&CK / MBC  (executables)"];
+    FL [label="mal-floss\nstring recovery  (PE)"];
+    DE [label="mal-detonate  [WIP]\nqemu-user -strace  (opt-in, root ELF)", style="rounded,filled,dashed", fillcolor="#e6ecf6"];
+  }
+
+  BR   [label="mal-broker (jailed, zero mounts, zero network)\nstrict JSON, unknown-field reject, hard size caps\nthe ONE and ONLY decode path for worker output", fillcolor="#fff3d6", color="#a9761a"];
+
+  LAT  [label="fail-closed lattice + triage score\nBENIGN < UNKNOWN < SUSPICIOUS < MALICIOUS  (monotone max)\northogonal LOW/MED/HIGH confidence + 0-100 score", shape=octagon, fillcolor="#fde9d0", color="#c76a1a"];
+
+  CON  [label="analyst console (mal-web) + read API\nranked queue, recursive evidence tree, defanged", shape=oval, fillcolor="#e6dcf1", color="#6a1b9a"];
+
+  // ---- the caged AI plane, off the critical path ----
+  subgraph cluster_ai {
+    label=<<b>AI-ANALYST PLANE</b>  (isolated, no egress, untrusted; off unless a model is wired)>;
+    style="rounded,filled"; fillcolor="#f8f2f2"; color="#c73338"; fontcolor="#b71c1c";
+    AG  [label="AgentGraphWorkflow  (ABANDON child)\nPydantic-AI roster -> Validate -> downgrade-only gate\nsee agentic-plane.dot for the full plane", fillcolor="#f4e6e6"];
+    HITL[label="HITL\nTemporal query + durable signal (7d)", fillcolor="#f4e6e6"];
+  }
+
+  // ---- flows ----
+  AN  -> GW   [label="POST /v1/submissions"];
+  GW  -> VAULT[label="stream + sha256"];
+  GW  -> OR   [label="start SubmissionWorkflow\n(hash, path, filename, detonate)"];
+  OR  -> ID; OR -> YA; OR -> EX; OR -> CA; OR -> FL;
+  OR  -> DE  [style=dashed, color="#7d9bbb"];
+  OR  -> VAULT[label="one file, read-only\nvia volume-subpath", dir=both, color="#8a94a6", constraint=false];
+
+  ID -> BR; YA -> BR; EX -> BR; CA -> BR; FL -> BR;
+  DE -> BR [style=dashed, color="#7d9bbb"];
+  BR -> OR [label="validated JSON only"];
+  EX -> OR [label="children: re-hash,\nsymlink/TOCTOU-safe ingest", color="#a9761a", constraint=false];
+
+  OR  -> LAT [label="fold every finding"];
+  LAT -> GW  [label="verdict persisted immediately"];
+  GW  -> CON [label="GET /v1/submissions/{id}, /v1/queue"];
+
+  OR  -> AG   [label="fire-and-forget after verdict\n(MAL_AGENTS_URL set)", style=dashed, color="#c73338"];
+  AG  -> LAT  [label="fold: raise-only, capped SUSPICIOUS", color="#2f8f63", constraint=false];
+  AG  -> HITL [label="escalate", color="#c73338"];
+  HITL-> CON  [label="review panel", dir=both, color="#6a1b9a", constraint=false];
+}

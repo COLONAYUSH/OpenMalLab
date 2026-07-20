@@ -51,6 +51,7 @@ Most of what you need to analyze malware already exists. The problem is it lives
 - [The containment model](#the-containment-model)
 - [The engines](#the-engines)
 - [The analyst console](#the-analyst-console)
+- [Dynamic analysis](#dynamic-analysis-wip)
 - [The agentic analyst](#the-agentic-analyst)
 - [Roadmap](#roadmap)
 - [Tech stack](#tech-stack)
@@ -130,10 +131,12 @@ flowchart LR
     EX[mal-extract<br/>recursive unpack]
     CA[mal-capa<br/>capa capabilities]
     FL[mal-floss<br/>string recovery]
+    DE[mal-detonate<br/>qemu-user strace - WIP]
   end
 
   OR -- one file, read-only --> ID & YA & EX & CA & FL
-  ID & YA & EX & CA & FL -- raw bytes --> BR[mal-broker<br/>validate under caps]
+  OR -. opt-in: detonate=true, root ELF .-> DE
+  ID & YA & EX & CA & FL & DE -- raw bytes --> BR[mal-broker<br/>validate under caps]
   BR -- validated only --> OR
   EX -- children --> OR
   OR -- fail-closed lattice<br/>plus confidence plus score --> GW
@@ -148,11 +151,15 @@ flowchart LR
 6. **Validate** every engine's raw output inside a jailed broker before a single byte reaches a trusted decoder.
 7. **Roll up** a deterministic verdict on the lattice, with an orthogonal confidence and a 0-100 triage score, every point tracing to its evidence.
 
-The platform is three strongly isolated planes. A trusted control plane that never parses raw hostile bytes in a privileged process, a data plane that parses hostile bytes but cannot execute them or reach the network, and (in Phase 2) a detonation plane that is physically dead-ended.
+Optionally, when a submission is sent with `detonate=true`, a root-level ELF is also **detonated** as data under a jailed `qemu-user` emulator and its syscall trace mined into behavioral findings. This is the first dynamic-analysis slice ([see below](#dynamic-analysis-wip)); it caps at SUSPICIOUS like every other engine and never touches the deterministic verdict's floor.
+
+The platform is built as strongly isolated planes: a trusted control plane that never parses raw hostile bytes in a privileged process, and a data plane that parses hostile bytes but cannot execute them or reach the network. The eventual, physically-segregated detonation plane is the Phase 3 design; the dynamic slice that ships today runs on the same single-use jail recipe as every static engine.
 
 <div align="center">
-  <img src="docs/diagrams/render/01-system-planes.png" alt="System planes and trust architecture" width="760" />
+  <img src="docs/diagrams/render/pipeline.svg" alt="End-to-end submission-to-verdict pipeline" width="820" />
 </div>
+
+<sub>Source: <a href="docs/diagrams/pipeline.dot"><code>docs/diagrams/pipeline.dot</code></a>. The multi-tier north-star architecture (the numbered <a href="docs/diagrams/">diagram set</a>) is the long-term design, not the current deployment.</sub>
 
 ## The containment model
 
@@ -197,6 +204,7 @@ Each engine is a best-of-breed open tool, wrapped as a jailed worker that speaks
 | `mal-extract` | pure-Rust `zip` / `tar` / `flate2` | Recursive, bomb-safe, Zip-Slip-proof unpacking | MIT / Apache-2.0 | Live |
 | `mal-capa` | [capa](https://github.com/mandiant/capa) (Mandiant) | ATT&CK / MBC capability detection | Apache-2.0 | Live |
 | `mal-floss` | [FLOSS](https://github.com/mandiant/flare-floss) (Mandiant) | Static, stack, tight, and emulation-decoded strings from PEs | Apache-2.0 | Live |
+| `mal-detonate` | [QEMU](https://www.qemu.org/) user-mode (`qemu-<arch>-static -strace`) | Dynamic behavior from an ELF's syscall trace, opt-in and contained ([details](#dynamic-analysis-wip)) | GPL-2.0 (process-isolated) | WIP |
 | `mal-static-die` | [Detect It Easy](https://github.com/horsicq/Detect-It-Easy) | Packer / compiler / crypto fingerprinting | MIT | Next |
 | config extraction | [MACO](https://github.com/CybercentreCanada/maco) + configextractor-py | Normalized family config / C2 extraction | MIT | Planned |
 
@@ -205,6 +213,18 @@ Rules and models are vendored into each image and pinned by hash, so the image d
 ## The analyst console
 
 A dark, forensic, read-only triage front end: a severity-striped queue ranked by verdict then score, and a detail pane with a circular score gauge over the recursive evidence tree (breadcrumb paths, findings grouped by engine, ATT&CK chips). It is fully self-contained and air-gap-clean (no external fonts, scripts, or calls), theme-aware, and every specimen-derived string is inert-rendered and defanged, because the console is itself a hostile-content surface. Source in [`services/mal-web/`](services/mal-web/).
+
+## Dynamic analysis (WIP)
+
+Static analysis reads a file; dynamic analysis watches it run. The first slice of the detonation phase ships the `mal-detonate` engine, and it earns its place by refusing to break the containment promise the static engines make.
+
+It never lets the host kernel execute the sample. A submitted, root-level ELF is opened as **data** and interpreted by a trusted, image-resident `qemu-<arch>-static` user-mode emulator. The emulator's own `-strace` is the instrumentation, so there is no in-guest agent, no ptrace, no eBPF, and no writable-plus-executable surface. That syscall trace is mined into behavioral findings: process execution ([T1204](https://attack.mitre.org/techniques/T1204/)), writes to persistence paths ([T1547](https://attack.mitre.org/techniques/T1547/)), outbound connections ([T1071](https://attack.mitre.org/techniques/T1071/)), file deletion ([T1070](https://attack.mitre.org/techniques/T1070/)), and evasive or privileged syscalls ([T1497](https://attack.mitre.org/techniques/T1497/)).
+
+- **Opt-in, never automatic.** Detonation only happens when a submission is sent with `detonate=true`, and only for a root-level ELF. Nothing detonates by default.
+- **Same jail as everything else.** No network, all capabilities dropped, read-only root, non-root, seccomp, bounded wall-clock and memory. Its output crosses the broker like any other engine's.
+- **Fail-closed and capped.** A clean run is UNKNOWN, not benign. Behavioral evidence is inference, so it caps at SUSPICIOUS; the AI-free deterministic verdict can never be pushed to MALICIOUS by detonation alone.
+
+Status: the worker, the orchestrator wiring, the `detonate=true` gateway flag, and the compose entry are all built and unit-tested. What is left is building the worker image and running its live proof on a clean network (a proxy on the dev box blocks the image build), and adding a detonation section to the boundary proof. The design of record is [docs/DYNAMIC-ANALYSIS-V1.md](docs/DYNAMIC-ANALYSIS-V1.md); the clean-network handoff is [docs/DETONATE-HANDOFF.md](docs/DETONATE-HANDOFF.md). The physically-segregated, full-system detonation range (KVM/Firecracker, Windows guests, a one-way pump) is the Phase 3 design, not this slice.
 
 ## The agentic analyst
 
@@ -286,35 +306,37 @@ air-gapped by default: no model configured means a deterministic-only platform.
 
 ## Roadmap
 
-We build in phases, and each phase is a real product on its own.
+We build in phases, each a real product on its own. The canonical, phase-by-phase plan with acceptance gates is [docs/ROADMAP.md](docs/ROADMAP.md); the status below is keyed to it. Current state is **Alpha**: Phase 1 is done and proven live on a single box; Phase 2's first slice is built and wired.
 
-**Phase 1 - the static wedge** (now, and largely running)
+**Phase 1 - Sovereign static + AI core** &nbsp;`DONE`
 
-- [x] The containment model, the broker, the fail-closed lattice
+- [x] The containment model, the jailed broker, the fail-closed lattice
 - [x] Magika content-based identification
 - [x] YARA-X with a real, self-describing rule pack
-- [x] Recursive, bomb-safe extraction
+- [x] Recursive, bomb-safe, Zip-Slip-proof extraction
 - [x] capa ATT&CK / MBC capability detection
 - [x] FLOSS string recovery from PEs (static, stack, tight, emulation-decoded)
 - [x] Confidence axis and 0-100 triage score
 - [x] The read-only analyst console
-- [ ] DIE packer / compiler / crypto fingerprinting
-- [ ] MACO config / family extraction
-- [ ] Real vault crypto, WORM audit, OIDC, persistence, the live queue API
-
-**The agentic analyst** (built and tested; off by default until a model is wired)
-
 - [x] The caged AI plane: evidence contract, broker-analogue validator, and the inverted, downgrade-only confidence gate with all four axes
-- [x] Four-tier knowledge base (L0 exact-key, L0.5 fuzzy, L1 attribution graph, L2 semantic non-citable) with curated vs ingest trust tiers
-- [x] Nine-agent Pydantic-AI roster + the Temporal agent-graph, an adversarial verifier, and a hash-chained handshake ledger
-- [x] HITL via Temporal signals, tier-1 learning (poisoning-gated), autonomy graduation, calibration, and the tier-2/3 promotion gate
-- [ ] Live wiring: seed corpora at scale, a persistent graph/vector store, local vLLM inference, self-hosted Langfuse (see [ASK.md](ASK.md))
+- [x] Four-tier knowledge base (L0 exact-key, L0.5 fuzzy, L1 attribution graph, L2 semantic non-citable), curated vs ingest trust tiers, persistent L0 (embedded BoltDB) and a 208-fact starter corpus
+- [x] Nine-agent Pydantic-AI roster + the Temporal agent-graph, an adversarial verifier, a hash-chained handshake ledger, HITL, tier-1 learning, autonomy graduation, and calibration
+- [x] Proven live end to end against a real model (sovereign-local Ollama or a guarded-cloud endpoint)
+- [ ] Residuals rolled into hardening: DIE packer / compiler / crypto fingerprinting, and MACO config extraction
 
-**Phase 1.5** - Ghidra as a crash-isolated service, full Volatility memory forensics, an interactive analyst view, and full-text search at scale.
+**Phase 2 - Dynamic analysis (detonation)** &nbsp;`WIP`
 
-**Phase 2** - the detonation plane: multi-tier, anti-evasion, and physically dead-ended so a full escape reaches nothing. Hunting and retrohunt over your own corpus, code-reuse attribution, a threat-intel graph, case management, a guardrailed AI assistant, and hard multi-tenancy.
+- [x] Slice 0: the `mal-detonate` engine (jailed `qemu-user`, opt-in, ELF-only), orchestrator wiring, gateway flag, and compose entry - built and unit-tested ([details](#dynamic-analysis-wip))
+- [ ] Slice 0 live proof: build the worker image and run `detonate-proof.sh` on a clean network; add a detonation section to the boundary proof
+- [ ] Slices 1-5: detonation fidelity, a contained network sinkhole, dropped-artifact recursion, auto-gating with a budget, and a native-exec fidelity increment
 
-**Phase 3** - the frontier: sound LLM-plus-IR script deobfuscation, a generic unpacker, symbolic execution, a STIX knowledge graph, and a natural-language investigation agent scoped tightly to one case.
+**Phase 3 - Production detonation range** &nbsp;`PLANNED` - a physically-segregated node with a one-way pump, full-system guests (KVM/Firecracker), Windows support, and hypervisor-grade anti-evasion monitoring. Needs hardware.
+
+**Phase 4 - Reporting, interop, and API** &nbsp;`PLANNED` &nbsp;(first slice on `main`) - the STIX 2.1 / MISP export core is built and unit-tested on `main` ([`internal/export/`](internal/export/): deterministic, pure over the verdict contract, with defanged IOC extraction); exposing it on the read API is the next step. Then a copyable IOC panel, a stable public REST API + OpenAPI, webhooks, batch submission, and SIEM/TheHive connectors.
+
+**Phase 5 - Intelligence and learning at scale** &nbsp;`PLANNED` &nbsp;(first slice on `main`) - the L1 attribution-graph persistence layer is built on `main` ([`internal/knowledge/persist_graph.go`](internal/knowledge/persist_graph.go): embedded BoltDB, atomic, poisoning-guarded), with startup wiring the last step. Then a curated-corpus growth pipeline with trust-tiered OSINT ingestion, learning tiers 2 and 3 (DSPy prompt-opt, LoRA fine-tune) as offline eval-gated jobs, and drift monitoring.
+
+**Phase 6 - Productization and GA** &nbsp;`PLANNED` - a work queue with backpressure, AuthN/AuthZ and RBAC, packaging (compose profiles + Helm), an SBOM and signed releases, soak testing, and an external security review.
 
 Why detonation is Phase 2 and not Phase 1 is in [docs/DECISION-LOG.md](docs/DECISION-LOG.md).
 
@@ -324,7 +346,7 @@ Chosen for correctness, offline operability, and a permissive-license core.
 
 - **Orchestration:** Temporal for durable workflows, retries, timeouts, safe recursion, and the durable HITL await.
 - **Languages:** Rust at the hostile-input boundary, Go for the control plane and the trusted AI adjudicator, Python for the heavier analysis engines and the agent roster, HTML/CSS/JS for the console.
-- **The AI plane (lean by design):** Pydantic-AI for typed, structured-output agents; a local, OpenAI-compatible model (vLLM) by default with a guarded, egress-gated cloud adapter; self-hosted Langfuse for on-premise tracing. No heavy framework tree in the air-gapped plane; the strict Go validator is the security primitive.
+- **The AI plane (lean by design):** Pydantic-AI for typed, structured-output agents; a local, OpenAI-compatible model served by Ollama by default (any OpenAI-compatible server works), with a guarded, egress-gated cloud adapter; self-hosted Langfuse for on-premise tracing. No heavy framework tree in the air-gapped plane; the strict Go validator is the security primitive.
 - **State, kept deliberately small:** PostgreSQL, Temporal, SeaweedFS for object storage, OpenBao for secrets.
 - **Isolation:** every engine is a jailed, single-use sibling container spawned per submission; the orchestrator is the only writer of the stores; the AI plane runs in its own no-egress network and can never touch the deterministic verdict.
 
@@ -339,6 +361,7 @@ services/
   mal-static-yara/   Rust  YARA-X with a self-describing rule pack
   mal-capa/          Py    capa capability detection
   mal-floss/         Py    FLOSS string recovery
+  mal-detonate/      Py    jailed qemu-user dynamic analysis (WIP, opt-in)
   mal-broker/        Go    the trust-boundary validator
   mal-web/           web   the read-only analyst console
   mal-agents/        Py    the jailed Pydantic-AI agent roster (the AI plane's reasoning)
@@ -351,18 +374,33 @@ docs/                the full, frozen, reviewed design
 
 ## Design docs
 
+The docs split into two eras, on purpose. The **as-built** set tracks the code that ships on `main`. The **original design** set is the larger, multi-year north star it was cut down from; parts of it were deliberately superseded (a simpler stack, a different AI design, one container detonation slice instead of a segregated hypervisor cluster). Where the two disagree about what is built today, the as-built set wins.
+
+**As-built (what actually runs now):**
+
+- [docs/COMPONENTS.md](docs/COMPONENTS.md) - the code map: every engine, the AI plane, the knowledge base, and the console linked to their source, with status.
+- [docs/ROADMAP.md](docs/ROADMAP.md) - the canonical phase-by-phase plan and status (the freshest source of truth).
+- [docs/AI-PLANE-INTEGRATION.md](docs/AI-PLANE-INTEGRATION.md) - the AI plane and its live wiring.
+- [docs/LIVE-GUIDE.md](docs/LIVE-GUIDE.md) - the full submit -> verdict -> AI enrichment -> human-review walkthrough.
+- [docs/DYNAMIC-ANALYSIS-V1.md](docs/DYNAMIC-ANALYSIS-V1.md) - the design of the first detonation slice.
+- [docs/diagrams/pipeline.dot](docs/diagrams/pipeline.dot) and [docs/diagrams/agentic-plane.dot](docs/diagrams/agentic-plane.dot) - the two current diagrams (rendered under `docs/diagrams/render/`).
+
 <details>
-<summary><b>The whole plan, frozen and reviewed</b></summary>
+<summary><b>Original design (the whole plan, reviewed - roadmap-level intent, partly superseded)</b></summary>
 
 <br />
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - the ADRs: the three-plane model, containment, orchestration, storage, licensing.
-- [docs/PHASE1-TECHNICAL-DESIGN.md](docs/PHASE1-TECHNICAL-DESIGN.md) - the buildable Phase 1: component contracts, fail-closed invariants, the adversarial corpus.
+> These predate the shipped code and describe the full north-star system. Read them for intent and for the review trail, not as the current deployment; each is being reconciled against the as-built set above.
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - the ADRs: the three-plane model, containment, orchestration, storage, licensing (with an as-built banner at the top).
+- [docs/PHASE1-TECHNICAL-DESIGN.md](docs/PHASE1-TECHNICAL-DESIGN.md) - the originally-scoped Phase 1: component contracts, fail-closed invariants, the adversarial corpus.
+- [docs/FEATURE-SPEC.md](docs/FEATURE-SPEC.md) - the full product surface and the strategic thesis.
 - [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) - STRIDE per boundary, attack trees, residual-risk register.
 - [docs/ARCHITECTURE-REVIEW.md](docs/ARCHITECTURE-REVIEW.md) - the round-3 eight-lens adversarial review and every disposition.
+- [docs/DESIGN-AUDIT.md](docs/DESIGN-AUDIT.md) - the round-2 adversarial audit.
 - [docs/DECISION-LOG.md](docs/DECISION-LOG.md) - the build decisions and why we cut Phase 1 the way we did.
 - [docs/LICENSING-BRIEF.md](docs/LICENSING-BRIEF.md) - how the Apache core stays clean next to copyleft engines.
-- [docs/diagrams/](docs/diagrams/) - the rendered system diagrams and how to rebuild them.
+- [docs/diagrams/](docs/diagrams/) - the full rendered diagram set (the numbered set is the north-star design; the two top-level diagrams are as-built) and how to rebuild them.
 
 </details>
 
@@ -377,11 +415,11 @@ Pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). The one rule 
 
 ## License
 
-Apache-2.0 for the core. Copyleft engines, when they arrive in later phases, run as process-isolated, separately-licensed components, never linked into the core. See [docs/LICENSING-BRIEF.md](docs/LICENSING-BRIEF.md).
+Apache-2.0 for the core. Copyleft engines run as process-isolated, separately-licensed components, never linked into the core. The first of these is `mal-detonate`'s `qemu-user-static` (GPL-2.0), invoked as a subprocess inside the jail and never linked into the Apache core. See [docs/LICENSING-BRIEF.md](docs/LICENSING-BRIEF.md).
 
 ## Acknowledgements
 
-OpenMalLab stands on the work of the teams behind [Magika](https://github.com/google/magika), [YARA-X](https://github.com/VirusTotal/yara-x), [capa](https://github.com/mandiant/capa), [FLOSS](https://github.com/mandiant/flare-floss), [Detect It Easy](https://github.com/horsicq/Detect-It-Easy), [MACO](https://github.com/CybercentreCanada/maco), and [Temporal](https://github.com/temporalio/temporal). We are grateful for it, and we credit it loudly.
+OpenMalLab stands on the work of the teams behind [Magika](https://github.com/google/magika), [YARA-X](https://github.com/VirusTotal/yara-x), [capa](https://github.com/mandiant/capa), [FLOSS](https://github.com/mandiant/flare-floss), [QEMU](https://www.qemu.org/), [Detect It Easy](https://github.com/horsicq/Detect-It-Easy), [MACO](https://github.com/CybercentreCanada/maco), and [Temporal](https://github.com/temporalio/temporal). We are grateful for it, and we credit it loudly.
 
 ---
 
