@@ -209,6 +209,13 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 		if isExecutable(identRep) {
 			capaF := workflow.ExecuteActivity(heavyCtx, a.CapaActivity, artifact)
 			fold(item.Path, "mal-capa", capaF)
+			// Detect It Easy: packer / compiler / crypto fingerprinting on the same
+			// executable surface as capa. it is the packed/unanalyzed gate (a packer
+			// floors the artifact SUSPICIOUS + incomplete). light and deterministic,
+			// so the default context, not the heavy one. a no-op until MAL_DIE_IMAGE
+			// is set (see DieActivity), so this is safe to ship before the image exists.
+			dieF := workflow.ExecuteActivity(ctx, a.DieActivity, artifact)
+			fold(item.Path, "mal-static-die", dieF)
 		}
 
 		// string recovery, only for PE: FLOSS decodes PE and shellcode only, and

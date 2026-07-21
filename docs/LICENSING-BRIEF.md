@@ -15,6 +15,7 @@ Integration modes: **[NET]** separate process over gRPC/HTTP with a normalized J
 | Ghidra | Apache-2.0 | RE engine (Phase-1.5) | NET/CLI |
 | YARA-X | BSD-3 | scanning/hunt | IMPORT (safe) |
 | capa, FLOSS, Magika | Apache-2.0 | capability/strings/ident | CLI/IMPORT (safe) |
+| Detect It Easy (diec) | MIT | packer/compiler/crypto fingerprinting (P1) | CLI (safe) |
 | CAPE / capemon technique | GPLv3 | detonation/anti-evasion | **NET, or clean-room** |
 | Qiling | GPLv2 | emulation (Phase-2) | **IMPORT -> must isolate** |
 | Unicorn | GPLv2 | emulation core (also pulled by Speakeasy) | **IMPORT -> must isolate** |

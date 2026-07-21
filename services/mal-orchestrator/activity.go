@@ -88,6 +88,13 @@ type Analyzer struct {
 	detonateWall     time.Duration
 	detonateMemBytes int64
 	detonateScratch  string
+	// mal-static-die runs Detect It Easy over the sample. light and deterministic
+	// like the static engines (no emulation), so it takes the default jail (no
+	// raised memory/scratch). config-gated: DieActivity is a no-op reporting an
+	// empty UNKNOWN until MAL_DIE_IMAGE is set, so the wiring ships before the DIE
+	// image is built on a clean network.
+	dieImage string
+	dieWall  time.Duration
 
 	// optional AI-analyst plane. nil in the air-gapped default (no model wired);
 	// when set, EnrichmentWorkflow runs it as a caged, async, post-verdict step.
@@ -204,6 +211,31 @@ func (a *Analyzer) CapaActivity(ctx context.Context, in pipeline.SubmissionInput
 		env:          []string{"HOME=/scratch", "TMPDIR=/scratch"},
 		memoryBytes:  a.capaMemBytes,
 		scratchSize:  a.capaScratch,
+	}, in.SHA256)
+	if err != nil {
+		return pipeline.EngineReport{}, err
+	}
+	return mapReport(br), nil
+}
+
+// DieActivity runs Detect It Easy over the artifact, jailed, to fingerprint
+// packers, protectors, compilers, linkers and crypto. it is the packed/unanalyzed
+// gate: a packer floors the artifact to SUSPICIOUS + incomplete because the static
+// engines cannot read a packed payload. config-gated so the whole engine can ship
+// before its image exists - with MAL_DIE_IMAGE unset it reports an empty UNKNOWN
+// (invisible, never floors a verdict), so it cannot pollute a submission until an
+// operator builds the image on a clean network and sets the env. runs on the
+// default (light) jail: DIE does no emulation, so no raised memory/scratch.
+func (a *Analyzer) DieActivity(ctx context.Context, in pipeline.SubmissionInput) (pipeline.EngineReport, error) {
+	if a.dieImage == "" {
+		return pipeline.EngineReport{Engine: "mal-static-die", Verdict: pipeline.Unknown}, nil
+	}
+	br, err := a.runWorkerThroughBroker(ctx, jailSpec{
+		image:        a.dieImage,
+		mounts:       []mount.Mount{sampleMount(a.vaultVolume, in.SHA256)},
+		wallClock:    a.dieWall,
+		submissionID: in.SubmissionID,
+		env:          []string{"HOME=/scratch", "TMPDIR=/scratch"},
 	}, in.SHA256)
 	if err != nil {
 		return pipeline.EngineReport{}, err

@@ -141,6 +141,11 @@ services:
       MAL_CAPA_IMAGE: openmallab/mal-capa:m0
       MAL_FLOSS_IMAGE: openmallab/mal-floss:m0
       MAL_DETONATE_IMAGE: openmallab/mal-detonate:m0
+      # mal-static-die (Detect It Easy) is OFF by default: this stays empty until you
+      # build its image on a clean network (`--profile build-die build`) and export
+      # MAL_DIE_IMAGE=openmallab/mal-static-die:m0 to turn it on (see docs/DIE-HANDOFF.md).
+      # empty -> DieActivity is a no-op, so it never floors or pollutes a submission.
+      MAL_DIE_IMAGE: ${MAL_DIE_IMAGE:-}
       MAL_BROKER_IMAGE: openmallab/mal-broker:m0
     volumes:
       # the engine socket is the spawn authority in phase 1: the orchestrator
@@ -227,6 +232,18 @@ services:
       context: ..
       dockerfile: services/mal-detonate/Dockerfile
     image: openmallab/mal-detonate:m0
+
+  # packer / compiler / crypto fingerprinting (Detect It Easy). NOT in the default
+  # `build` profile on purpose: its image fetches DIE from a GitHub release at build
+  # time, so the standard `docker compose --profile build build` (and CI) must not
+  # attempt it until the release is pinned and verified on a clean network. build it
+  # deliberately with `docker compose --profile build-die build` (see docs/DIE-HANDOFF.md).
+  mal-static-die:
+    profiles: [build-die]
+    build:
+      context: ..
+      dockerfile: services/mal-static-die/Dockerfile
+    image: openmallab/mal-static-die:m0
 
   mal-broker:
     profiles: [build]

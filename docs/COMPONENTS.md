@@ -91,7 +91,7 @@ BENIGN by omission.
 | **mal-capa** | [`services/mal-capa/wrapper.py`](../services/mal-capa/wrapper.py) | Mandiant capa (vivisect backend) | Capability detection; only suspicious namespaces escalate to SUSPICIOUS, and it never emits MALICIOUS alone | full ATT&CK + MBC set per match | Live |
 | **mal-floss** | [`services/mal-floss/wrapper.py`](../services/mal-floss/wrapper.py) | Mandiant FLOSS (vivisect) | Static + stack/tight/decoded string recovery from PEs (two-phase budget) | none; strings are leads, always UNKNOWN, defanged downstream | Live |
 | **mal-detonate** | [`services/mal-detonate/wrapper.py`](../services/mal-detonate/wrapper.py) | `qemu-<arch>-static -strace` | Dynamic behavior mined from the emulator's syscall trace (proc-exec, persistence writes, net-connect, file-delete, evasive/privileged syscalls); caps at SUSPICIOUS; a clean run is UNKNOWN | T1204, T1547, T1071, T1070, T1497 | WIP |
-| mal-static-die | not created | Detect It Easy | Packer/compiler/crypto fingerprinting | T1027.002 | Roadmap |
+| **mal-static-die** | [`services/mal-static-die/wrapper.py`](../services/mal-static-die/wrapper.py) | Detect It Easy (diec) | Packer/protector (the packed/unanalyzed gate: floors SUSPICIOUS + incomplete), plus compiler/linker/crypto provenance as UNKNOWN evidence | T1027.002 | Built + wired + unit-tested; off by default (`DieActivity` is a no-op until `MAL_DIE_IMAGE` is set) and its image builds on a clean network via `--profile build-die` (see [`DIE-HANDOFF.md`](DIE-HANDOFF.md)) |
 | config extraction | not created | MACO + configextractor-py | Normalized family config / C2 extraction | - | Roadmap |
 
 Dispatch gating (in `workflow.go`): ident and YARA run on everything in parallel;

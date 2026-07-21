@@ -205,7 +205,7 @@ Each engine is a best-of-breed open tool, wrapped as a jailed worker that speaks
 | `mal-capa` | [capa](https://github.com/mandiant/capa) (Mandiant) | ATT&CK / MBC capability detection | Apache-2.0 | Live |
 | `mal-floss` | [FLOSS](https://github.com/mandiant/flare-floss) (Mandiant) | Static, stack, tight, and emulation-decoded strings from PEs | Apache-2.0 | Live |
 | `mal-detonate` | [QEMU](https://www.qemu.org/) user-mode (`qemu-<arch>-static -strace`) | Dynamic behavior from an ELF's syscall trace, opt-in and contained ([details](#dynamic-analysis-wip)) | GPL-2.0 (process-isolated) | WIP |
-| `mal-static-die` | [Detect It Easy](https://github.com/horsicq/Detect-It-Easy) | Packer / compiler / crypto fingerprinting | MIT | Next |
+| `mal-static-die` | [Detect It Easy](https://github.com/horsicq/Detect-It-Easy) | Packer / compiler / crypto fingerprinting; the packed/unanalyzed gate | MIT | WIP |
 | config extraction | [MACO](https://github.com/CybercentreCanada/maco) + configextractor-py | Normalized family config / C2 extraction | MIT | Planned |
 
 Rules and models are vendored into each image and pinned by hash, so the image digest pins the exact detection content and nothing is fetched at run time. Operators drop their own rule packs into a documented slot for offline builds.
@@ -322,7 +322,8 @@ We build in phases, each a real product on its own. The canonical, phase-by-phas
 - [x] Four-tier knowledge base (L0 exact-key, L0.5 fuzzy, L1 attribution graph, L2 semantic non-citable), curated vs ingest trust tiers, persistent L0 (embedded BoltDB) and a 208-fact starter corpus
 - [x] Nine-agent Pydantic-AI roster + the Temporal agent-graph, an adversarial verifier, a hash-chained handshake ledger, HITL, tier-1 learning, autonomy graduation, and calibration
 - [x] Proven live end to end against a real model (sovereign-local Ollama or a guarded-cloud endpoint)
-- [ ] Residuals rolled into hardening: DIE packer / compiler / crypto fingerprinting, and MACO config extraction
+- [x] DIE packer / compiler / crypto fingerprinting (`mal-static-die`): built and wired as the packed/unanalyzed gate, unit-tested; off by default until its image is built on a clean network (`--profile build-die`) and `MAL_DIE_IMAGE` is set
+- [ ] MACO config extraction (the last Phase 1 residual)
 
 **Phase 2 - Dynamic analysis (detonation)** &nbsp;`WIP`
 

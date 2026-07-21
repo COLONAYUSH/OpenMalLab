@@ -102,6 +102,11 @@ func main() {
 		detonateWall:     envDurOr("MAL_DETONATE_WALL_CLOCK", 120*time.Second),
 		detonateMemBytes: envInt64Or("MAL_DETONATE_MEMORY_BYTES", 1<<30), // 1 GiB
 		detonateScratch:  envOr("MAL_DETONATE_SCRATCH", "128m"),
+		// mal-static-die (Detect It Easy): packer/compiler/crypto ID. OFF by default
+		// (empty image) so it ships wired but dormant until its image is built on a
+		// clean network and MAL_DIE_IMAGE is set. see DieActivity + docs/DIE-HANDOFF.md.
+		dieImage: envOr("MAL_DIE_IMAGE", ""),
+		dieWall:  envDurOr("MAL_DIE_WALL_CLOCK", 120*time.Second),
 	}
 
 	// crash hygiene: jails are single-use and staging dirs are per-run; anything
@@ -173,8 +178,12 @@ func main() {
 	w.RegisterWorkflow(AgentGraphWorkflow)
 	w.RegisterActivity(a)
 
-	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s capa=%s floss=%s detonate=%s broker=%s)",
-		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.extractImage, a.capaImage, a.flossImage, a.detonateImage, a.brokerImage)
+	dieStatus := a.dieImage
+	if dieStatus == "" {
+		dieStatus = "off(set MAL_DIE_IMAGE)"
+	}
+	log.Printf("mal-orchestrator worker up (ns=%s queue=%s vault=%s yara=%s ident=%s extract=%s capa=%s floss=%s detonate=%s die=%s broker=%s)",
+		envOr("TEMPORAL_NAMESPACE", "openmallab"), TaskQueue, a.vaultVolume, a.workerImage, a.identImage, a.extractImage, a.capaImage, a.flossImage, a.detonateImage, dieStatus, a.brokerImage)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker stopped: %v", err)
 	}
