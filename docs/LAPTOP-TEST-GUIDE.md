@@ -101,6 +101,25 @@ broker image: openmallab/mal-broker:m0
 
 ## Test 3 - Sovereign LOCAL LLM + full AI plane (the headline)
 
+> **Status: already proven on the build box (2026-07-21)** - this exact loop passed there
+> against a local `llama3.2:1b` imported from a HuggingFace GGUF (`E2E-LIVE PROOF PASSED`).
+> Run it on your machine for the real model, but know the path is verified, not theoretical.
+>
+> **If you are behind a proxy that blocks the ollama model registry** (the `bootstrap-model`
+> pull times out or EOFs on the 2 GB blob, as it did on the build box), skip it and use the
+> HuggingFace-import workaround - HF's CDN is usually reachable where the ollama registry is not:
+> ```
+> # 1) on the host, download a GGUF (3B matches the default MAL_MODEL_NAME)
+> curl -L -o model.gguf \
+>   https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+> # 2) import it OFFLINE into the model volume (it mounts at /root/.ollama)
+> docker run --rm -v openmallab-models:/root/.ollama -v "$PWD":/gguf:ro --entrypoint sh \
+>   ollama/ollama:latest -c 'ollama serve & sleep 3; printf "FROM /gguf/model.gguf\n" >/tmp/M; ollama create llama3.2:3b -f /tmp/M'
+> # 3) bring up + prove (no bootstrap-model needed)
+> make up && make e2e-live
+> ```
+> On a clean home network none of this is needed - plain `make live` pulls the model normally.
+
 **Proves:** the whole platform live with a local, air-gapped model - submit ->
 deterministic verdict -> async AI enrichment by the caged agent roster -> the
 human-in-the-loop review relay -> and that the AI is contained (it can never push a
