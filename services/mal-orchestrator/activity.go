@@ -40,7 +40,10 @@ var maxIngestBytes int64 = 128 << 20
 // maxIngestTotalBytes bounds the SUMMED size of children ONE extraction can pull
 // into the shared vault. the honest extractor self-limits to 256 MiB total, but a
 // compromised one could stage up to ~1000 x 128 MiB, so this aggregate cap bounds
-// a single extraction to 512 MiB. NOTE: this is strictly PER-EXTRACTION - the
+// a single extraction to 512 MiB plus at most one in-flight child: the guard is
+// checked at the top of the loop, before the next child's true size is known, so
+// the honest worst case is 512 MiB + one maxIngestBytes child (~640 MiB). NOTE:
+// this is strictly PER-EXTRACTION - the
 // workflow runs up to maxArtifacts extractions with no cross-node byte budget, so
 // a branching archive can still amplify distinct writes across nodes. a
 // per-submission ingest budget threaded through SubmissionWorkflow (like

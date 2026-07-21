@@ -14,7 +14,9 @@ package aiplane
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"unicode"
@@ -155,7 +157,13 @@ func Validate(raw []byte) (Proposal, error) {
 	if err := dec.Decode(&p); err != nil {
 		return Proposal{}, fmt.Errorf("aiplane: proposal decode: %w", err)
 	}
-	if dec.More() {
+	// dec.More() is too forgiving for a trust boundary: it answers false for a
+	// stray '}' or ']' after the document, so close-bracket garbage would ride
+	// along unseen. mirror the broker (services/mal-broker/validate.go): after the
+	// one proposal there must be nothing but whitespace until EOF. a second decode
+	// reports pure whitespace as io.EOF; any other byte is trailing data.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return Proposal{}, fmt.Errorf("aiplane: trailing data after proposal")
 	}
 	if len(p.Hypotheses) > maxHypotheses {

@@ -113,7 +113,12 @@ func SubmissionWorkflow(ctx workflow.Context, in pipeline.SubmissionInput) (pipe
 			// rollup.
 			res.Verdict = pipeline.Max(res.Verdict, f.Verdict)
 			// bound the summed finding size so the workflow result fits Temporal.
-			sz := len(f.Detail) + len(path) + len(f.Type) + len(f.Attck) + len(f.Engine) + 48
+			// the constant covers the per-finding JSON structural overhead the field
+			// lengths above omit: the object braces, the quoted keys, and the
+			// always-present verdict + confidence string values (~110 bytes). counting
+			// it makes the cap trip with real headroom instead of undercounting toward
+			// Temporal's payload limit.
+			sz := len(f.Detail) + len(path) + len(f.Type) + len(f.Attck) + len(f.Engine) + 128
 			if findingsBytes+sz > maxFindingsBytes {
 				if !findingsCapped {
 					findingsCapped = true
