@@ -250,6 +250,10 @@ impl Extractor {
                     let dst = self.out.join(&sha);
                     if std::fs::rename(&tmp, &dst).is_err() {
                         let _ = std::fs::remove_file(&tmp);
+                        // release the dedup slot: this sha never staged, so a later
+                        // byte-identical entry must be free to stage it instead of
+                        // being dropped as a false duplicate of a file we never wrote.
+                        self.seen.remove(&sha);
                         self.incomplete = true;
                         self.note("extraction-error", "could not stage a child", SUSPICIOUS);
                         return true;
