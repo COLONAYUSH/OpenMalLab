@@ -383,6 +383,7 @@ The docs split into two eras, on purpose. The **as-built** set tracks the code t
 - [docs/ROADMAP.md](docs/ROADMAP.md) - the canonical phase-by-phase plan and status (the freshest source of truth).
 - [docs/AI-PLANE-INTEGRATION.md](docs/AI-PLANE-INTEGRATION.md) - the AI plane and its live wiring.
 - [docs/LIVE-GUIDE.md](docs/LIVE-GUIDE.md) - the full submit -> verdict -> AI enrichment -> human-review walkthrough.
+- [docs/LAPTOP-TEST-GUIDE.md](docs/LAPTOP-TEST-GUIDE.md) - the clean-network checklist: every proof to run on a real machine (base e2e, containment, local-LLM live, detonation, DIE), with the exact commands and expected output.
 - [docs/DYNAMIC-ANALYSIS-V1.md](docs/DYNAMIC-ANALYSIS-V1.md) - the design of the first detonation slice.
 - [docs/diagrams/pipeline.dot](docs/diagrams/pipeline.dot) and [docs/diagrams/agentic-plane.dot](docs/diagrams/agentic-plane.dot) - the two current diagrams (rendered under `docs/diagrams/render/`).
 
