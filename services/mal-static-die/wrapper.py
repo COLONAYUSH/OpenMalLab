@@ -119,14 +119,6 @@ def fail(msg):
     sys.exit(0)
 
 
-# not-applicable: DIE could not treat this file as a binary it understands (magika
-# mis-gated a non-executable). that is not a failure and not suspicious; it is
-# simply outside DIE's scope, so report an honest empty UNKNOWN.
-def not_applicable(reason):
-    emit([finding("not-applicable", reason, "", "UNKNOWN")], "UNKNOWN", False)
-    sys.exit(0)
-
-
 # die_argv is the exact command. keeping it a pure function lets the selftest
 # assert the wiring: "-j" is what makes diec emit the json this worker parses,
 # and the sample must be the last operand.
@@ -139,7 +131,9 @@ def die_argv(sample):
 # (SUSPICIOUS + T1027.002); everything else DIE identifies is UNKNOWN provenance
 # evidence. an unrecognized type is surfaced (never silently dropped) as UNKNOWN.
 def type_to_kind(die_type):
-    t = (die_type or "").strip().lower()
+    # str() first: diec output is untrusted like any engine's, so a malformed or
+    # hostile row whose "type" is not a string must be coerced, never crash .strip().
+    t = str(die_type or "").strip().lower()
     if t in PACKED_TYPES:
         kind = "protector" if t == "protector" else "packer"
         return kind, "SUSPICIOUS", PACKING_ATTCK
@@ -280,6 +274,13 @@ def selftest():
     f3, w3, i3 = map_die_doc({"detects": []})
     assert w3 == "UNKNOWN" and not i3 and len(f3) == 1 and f3[0]["type"] == "die-summary", (w3, i3, f3)
 
+    # a malformed/hostile diec row whose "type" is not a string must NOT crash the
+    # worker (we do not trust engine output): it is coerced and surfaced as UNKNOWN
+    # evidence. without the str() coercion in type_to_kind this raises AttributeError.
+    f4, w4, i4 = map_die_doc({"detects": [{"values": [{"type": 123, "string": "weird-row"}]}]})
+    assert w4 == "UNKNOWN" and not i4, (w4, i4)
+    assert any(f["detail"] == "weird-row" for f in f4), f4
+
     # the "-j" json flag must be present and the sample last, or diec prints text
     # this worker cannot parse and every scan fails closed.
     argv = die_argv("/in/sample")
@@ -336,7 +337,11 @@ def main():
         fail("DIE output was not a json object")
         return
 
-    findings, worst, incomplete = map_die_doc(doc)
+    try:
+        findings, worst, incomplete = map_die_doc(doc)
+    except Exception as e:  # noqa: BLE001 - any mapping surprise fails closed, never crashes
+        fail("DIE output could not be mapped: %s" % type(e).__name__)
+        return
     emit(findings, worst, incomplete)
 
 
