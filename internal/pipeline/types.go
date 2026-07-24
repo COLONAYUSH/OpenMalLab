@@ -165,6 +165,11 @@ func ConfidenceFor(engine, findingType string, v Verdict) Confidence {
 		"decompression-bomb", "high-compression-ratio", "entry-too-large",
 		"entry-count-cap", "skipped-symlink", "skipped-link", "skipped-special",
 		"path-traversal-name",
+		// more mal-extract fail-closed GAP indicators: a truncated or unreadable
+		// entry, a hard extraction error, or a broker findings-cap hit all mean "we
+		// could not fully parse this", not a detection, so like every gap they stay
+		// LOW and raise severity (via incomplete) without inflating the triage score.
+		"entry-truncated", "entry-unreadable", "extraction-error", "findings-cap-hit",
 		// a detonation timeout is a fail-closed GAP (we stopped observing), not a
 		// detection: incomplete already floors severity to SUSPICIOUS, so like every
 		// other gap it must stay LOW confidence and NOT inflate the triage score.

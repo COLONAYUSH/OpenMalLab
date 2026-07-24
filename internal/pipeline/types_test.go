@@ -134,7 +134,8 @@ func TestConfidenceRoundTripsAndFailsClosed(t *testing.T) {
 func TestConfidenceForPolicy(t *testing.T) {
 	// gaps and fail-closed floors are never more than tentative.
 	for _, ft := range []string{"error", "recursion-cap", "ingest-rejected",
-		"decompression-bomb", "path-traversal-name", "skipped-symlink"} {
+		"decompression-bomb", "path-traversal-name", "skipped-symlink",
+		"entry-truncated", "entry-unreadable", "extraction-error", "findings-cap-hit"} {
 		if c := ConfidenceFor("mal-extract", ft, Suspicious); c != ConfLow {
 			t.Fatalf("floor type %q got %v, want LOW", ft, c)
 		}

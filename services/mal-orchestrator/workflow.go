@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/COLONAYUSH/OpenMalLab/internal/pipeline"
 	enums "go.temporal.io/api/enums/v1"
@@ -397,6 +398,18 @@ func isELF(ident pipeline.EngineReport) bool {
 	return false
 }
 
+// breadcrumb length bounds. the broker only caps a child name at 8 KiB, and a
+// compromised extractor (the architecture's assumed threat model) can emit names
+// at that ceiling at every level. an unbounded breadcrumb would then let one
+// hostile archive inflate the per-artifact findings past Temporal's ~2 MiB
+// result-blob limit, so the workflow could never record a verdict (worse than
+// fail-closed). clamping each segment and the whole path keeps every finding
+// small; with the maxArtifacts cap the rolled-up result stays well under the limit.
+const (
+	maxCrumbSegment = 256 // matches the honest extractor's own sanitize() name clamp
+	maxCrumbPath    = 1024
+)
+
 // crumb extends a breadcrumb path with a child's name inside its container.
 // the name comes from inside a hostile archive and is length-checked by the
 // broker but not sanitized, so control characters (newlines, ANSI escapes)
@@ -409,8 +422,22 @@ func crumb(parent, name string) string {
 		}
 		return r
 	}, name)
+	name = clampBytes(name, maxCrumbSegment)
 	if parent == "" {
 		return name
 	}
-	return parent + "!" + name
+	return clampBytes(parent+"!"+name, maxCrumbPath)
+}
+
+// clampBytes truncates s to at most n bytes on a utf-8 rune boundary, appending a
+// marker so a bounded breadcrumb is visibly elided rather than silently cut.
+func clampBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	b := []byte(s)[:n]
+	for len(b) > 0 && !utf8.RuneStart(b[len(b)-1]) {
+		b = b[:len(b)-1]
+	}
+	return string(b) + "~"
 }
