@@ -327,9 +327,13 @@
      only, and defang so a crafted name can never render live or smuggle markup. */
   function defang(s) {
     s = String(s == null ? "" : s);
-    var out = "";
-    for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); out += (c < 0x20 || c === 0x7f) ? "." : s[i]; }
-    return out.replace(/https?:\/\//gi, function (m) { return m.replace(/t/gi, "x"); }).replace(/\./g, "[.]");
+    // neutralize inert-rendering hazards to ".": C0/C1/DEL controls (Cc), line and
+    // paragraph separators, and the Trojan-source carriers - all format chars (Cf:
+    // bidi overrides/isolates, zero-widths), combining marks (Mn/Me), and invisible
+    // default-ignorables (fillers, variation selectors). so nothing bidi-active or
+    // invisible reaches the browser's bidi algorithm. mirrors the AI-plane defang.
+    s = s.replace(/[\p{Cc}\p{Cf}\p{Mn}\p{Me}\p{Default_Ignorable_Code_Point}\u2028\u2029]/gu, ".");
+    return s.replace(/https?:\/\//gi, function (m) { return m.replace(/t/gi, "x"); }).replace(/\./g, "[.]");
   }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function shortSha(s) { s = String(s || ""); return s.length > 18 ? s.slice(0, 10) + ".." + s.slice(-6) : s; }
@@ -555,7 +559,7 @@
     var mid = el("div"); mid.appendChild(el("div", "fdetail", defang(f.detail)));
     var fm = el("div", "fmeta");
     var fv = el("span", "fverd", f.verdict); fv.style.setProperty("--fsev", VCOLOR[f.verdict] || "var(--unk)"); fm.appendChild(fv);
-    fm.appendChild(el("span", "ftype-lbl", f.type));
+    fm.appendChild(el("span", "ftype-lbl", defang(f.type)));
     if (f.confidence) fm.appendChild(confDots(f.confidence));
     mid.appendChild(fm); row.appendChild(mid);
     if (f.attck) row.appendChild(el("div", "attck", defang(f.attck))); else row.appendChild(el("div"));
